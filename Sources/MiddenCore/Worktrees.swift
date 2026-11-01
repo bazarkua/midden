@@ -33,6 +33,8 @@ struct WorktreeAuditor: Sendable {
     var activeWindow: TimeInterval = 7 * 86_400
     /// When the worktree was last used; replaceable in tests.
     var activityDate: @Sendable (_ gitDir: String) -> Date? = { WorktreeAuditor.lastActivity(gitDir: $0) }
+    /// Whether a file is on disk: 0, or lstat's errno; replaceable in tests.
+    var lookup: @Sendable (_ path: String) -> Int32 = { WorktreeAuditor.lookupError($0) }
 
     func audit(_ worktree: WorktreeMatch) -> WorktreeAudit {
         let path = worktree.path
@@ -179,19 +181,26 @@ struct WorktreeAuditor: Sendable {
                 detail: listed.message))
             steps.append("check it with `git -C \(Self.quoted(path)) ls-files -v`")
         } else {
-            let hidden = Self.hiddenFromStatus(lsFilesVZ: listed.output) { relative in
-                var info = stat()
-                return lstat(path + "/" + relative, &info) == 0
+            let (hidden, unchecked) = Self.hiddenFromStatus(lsFilesVZ: listed.output) { relative in
+                lookup(path + "/" + relative)
             }
-            if hidden.isEmpty {
+            if hidden.isEmpty, unchecked.isEmpty {
                 checks.append(SafetyCheck(
                     id: "hiddenChanges", title: "No changes hidden from git", passed: true,
                     detail: "No file present here is marked assume-unchanged or skip-worktree."))
             } else {
-                let sample = hidden.prefix(3).joined(separator: ", ") + (hidden.count > 3 ? ", …" : "")
+                var details: [String] = []
+                if !hidden.isEmpty {
+                    let sample = hidden.prefix(3).joined(separator: ", ") + (hidden.count > 3 ? ", …" : "")
+                    details.append("\(hidden.count) \(hidden.count == 1 ? "file is" : "files are") marked assume-unchanged or skip-worktree, so git status doesn't check \(hidden.count == 1 ? "it" : "them") for changes: \(sample).")
+                }
+                if !unchecked.isEmpty {
+                    let sample = unchecked.prefix(3).joined(separator: ", ") + (unchecked.count > 3 ? ", …" : "")
+                    details.append("Midden couldn't check whether \(unchecked.count) skip-worktree \(unchecked.count == 1 ? "file is" : "files are") on disk: \(sample).")
+                }
                 checks.append(SafetyCheck(
                     id: "hiddenChanges", title: "No changes hidden from git", passed: false,
-                    detail: "\(hidden.count) \(hidden.count == 1 ? "file is" : "files are") marked assume-unchanged or skip-worktree, so git status doesn't check \(hidden.count == 1 ? "it" : "them") for changes: \(sample)"))
+                    detail: details.joined(separator: " ")))
                 steps.append("check those files, and clear the flags with `git update-index --no-assume-unchanged` or `--no-skip-worktree` if they're no longer needed")
             }
         }
@@ -382,16 +391,36 @@ struct WorktreeAuditor: Sendable {
 
     /// Paths in `git ls-files -v -z` output whose changes git status can't
     /// see. Each entry is `<tag> <path>`: a lowercase tag means
-    /// assume-unchanged, `S` skip-worktree. A skip-worktree file counts only
-    /// when `exists` finds it on disk; a sparse checkout leaves it absent.
-    static func hiddenFromStatus(lsFilesVZ output: String, exists: (String) -> Bool) -> [String] {
-        output.split(separator: "\0", omittingEmptySubsequences: true).compactMap { field in
-            guard field.count > 2, let tag = field.first else { return nil }
+    /// assume-unchanged, `S` skip-worktree. A skip-worktree file counts as
+    /// hidden when `lookup` finds it on disk (returns 0), and is fine only
+    /// when it's confirmed absent (ENOENT, ENOTDIR), as a sparse checkout
+    /// leaves it. Any other lookup error puts it in `unchecked`: absence
+    /// wasn't established, so it blocks too.
+    static func hiddenFromStatus(
+        lsFilesVZ output: String, lookup: (String) -> Int32
+    ) -> (hidden: [String], unchecked: [String]) {
+        var hidden: [String] = []
+        var unchecked: [String] = []
+        for field in output.split(separator: "\0", omittingEmptySubsequences: true) {
+            guard field.count > 2, let tag = field.first else { continue }
             let path = String(field.dropFirst(2))
-            if tag.isLowercase { return path }
-            if tag == "S" { return exists(path) ? path : nil }
-            return nil
+            if tag.isLowercase {
+                hidden.append(path)
+            } else if tag == "S" {
+                switch lookup(path) {
+                case 0: hidden.append(path)
+                case ENOENT, ENOTDIR: break
+                case let code: unchecked.append(path + " (\(String(cString: strerror(code))))")
+                }
+            }
         }
+        return (hidden, unchecked)
+    }
+
+    /// 0 when something is at `path`, else lstat's errno.
+    static func lookupError(_ path: String) -> Int32 {
+        var info = stat()
+        return lstat(path, &info) == 0 ? 0 : errno
     }
 
     static func quoted(_ path: String) -> String {

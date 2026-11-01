@@ -158,6 +158,41 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
         #expect(audit.safety == .safe, "\(audit.checks)")
     }
 
+    /// A skip-worktree file whose lookup fails (permission, I/O) wasn't
+    /// shown to be absent, so it can't pass as a sparse checkout's: the
+    /// check fails, removal stays manual, and the cleaner refuses.
+    @Test(arguments: [EACCES, EIO])
+    func aSkipWorktreeFileThatCantBeLookedUpBlocksRemoval(code: Int32) throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try home.write("repo/kept/a.txt", text: "a\n")
+        try home.write("repo/left-out/b.txt", text: "b\n")
+        try sh(["git", "-C", repository, "add", "."])
+        try sh(["git", "-C", repository, "commit", "-q", "-m", "Two folders"])
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        try sh(["git", "-C", worktree, "sparse-checkout", "set", "kept"])
+
+        var engine = try CleanEngine(home: home.url)
+        engine.makeAuditor = {
+            var auditor = WorktreeAuditor(processes: ProcessDirectories(processes: []), activeWindow: 0)
+            auditor.lookup = { path in
+                path.hasSuffix("/left-out/b.txt") ? code : WorktreeAuditor.lookupError(path)
+            }
+            return auditor
+        }
+        let plan = engine.plan(worktree)
+        let check = try #require(plan.finding?.checks.first { $0.id == "hiddenChanges" })
+        #expect(!check.passed)
+        #expect(check.detail.contains("couldn't check"), "\(check.detail)")
+        #expect(check.detail.contains("left-out/b.txt"), "\(check.detail)")
+        #expect(plan.finding?.action.isAutomatic == false)
+        #expect(!plan.isApproved)
+
+        let result = engine.clean(worktree)
+        #expect(!result.ok)
+        #expect(FileManager.default.fileExists(atPath: worktree + "/kept/a.txt"))
+    }
+
     /// Why the check above exists: `git worktree remove`, without --force,
     /// deletes a worktree whose only extra file is an ignored .env.
     @Test func gitRemovesIgnoredFilesWithoutAsking() throws {

@@ -40,6 +40,8 @@ struct CleanEngine {
     /// Called at each stage of cleaning a file-system item, so tests can
     /// change the file system at exactly that moment.
     var barrier: @Sendable (CleanStage, String) -> Void = { _, _ in }
+    /// The worktree auditor, made fresh for each item; replaceable in tests.
+    var makeAuditor: @Sendable () -> WorktreeAuditor = { WorktreeAuditor(processes: .current()) }
     /// The mount table and a path's device; replaceable in tests.
     var mountPoints: @Sendable () -> [String]? = { System.mountPoints() }
     var deviceOf: @Sendable (String) -> dev_t? = { CleanEngine.lstatDevice($0) }
@@ -187,7 +189,7 @@ struct CleanEngine {
             case .buildFolder(let build):
                 return .success(Findings.buildFolder(build, path: path, bytes: bytes))
             case .worktree(let worktree):
-                let audit = WorktreeAuditor(processes: .current()).audit(worktree)
+                let audit = makeAuditor().audit(worktree)
                 return .success(Findings.worktree(worktree, audit: audit, home: home, bytes: bytes))
             }
         }
@@ -201,7 +203,7 @@ struct CleanEngine {
             return refuse("It's outside your home folder and isn't a worktree of a repository in it: \(unproven.reason)")
         case .success(let worktree):
             let bytes = (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
-            let audit = WorktreeAuditor(processes: .current()).audit(worktree)
+            let audit = makeAuditor().audit(worktree)
             return .success(Findings.worktree(worktree, audit: audit, home: home, bytes: bytes))
         }
     }
