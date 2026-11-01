@@ -181,7 +181,7 @@ There are no third-party dependencies, including for argument parsing.
 
 ## Testing
 
-`swift test` runs 87 tests against real file systems in temp folders. Every git command in the tests runs with the machine's git configuration switched off and git's automatic background maintenance disabled. Without that, a `git commit` in a test sometimes left `git maintenance` running in the worktree for a few milliseconds, and the cleaner correctly refused to remove a worktree a program was working in. A probe measured it: 12 of 80 commits left such a process behind with maintenance on, 0 of 80 with it off.
+`swift test` runs 147 tests against real file systems in temp folders; two slow stress tests (a 5,000-level chain, a folder of 200,000 entries) run only with `MIDDEN_STRESS=1`. Every git command in the tests runs with the machine's git configuration switched off and git's automatic background maintenance disabled. Without that, a `git commit` in a test sometimes left `git maintenance` running in the worktree for a few milliseconds, and the cleaner correctly refused to remove a worktree a program was working in. A probe measured it: 12 of 80 commits left such a process behind with maintenance on, 0 of 80 with it off.
 
 The tests cover:
 
@@ -194,6 +194,11 @@ The tests cover:
 - the progress estimate with a fake clock: phases in order, a fraction that never goes backwards
 - the space map: sizes add up, pruning rules, hard links counted once
 - cleaner refusals for paths outside home, symlinks, `..`, unknown folders and manual actions, and real deletion in a fake home
+- walk totals against `du -skx` and `find -x` on random trees from fixed seeds (sparse files, hard links, symlink loops, NFC and NFD names, names with newlines, 20,000 entries in one folder), paths longer than PATH_MAX, and walks while files, folders and permissions change
+- the reader with injected failures: EINTR, ENOMEM, errors before and after a batch, entries with errors or missing attributes, malformed records, readdir errors
+- the watchdog's bounds: stuck threads capped across repeated scans, late returns dropped, cancellation within a tick, no descriptors left open after failures
+- git checks that the user's configuration and inherited environment can't fool, ignored files of the user's, dirty submodules, an index left untouched
+- cleaner races at four stages of cleaning, and a real disk image mounted inside a folder to clean
 
 ## Known limits
 
