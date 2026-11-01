@@ -31,11 +31,12 @@ The disk on my Mac was 97% full. The biggest single cause was 117 old worktrees 
 | | Examples | How Midden decides |
 |---|---|---|
 | Git worktrees | `.claude/worktrees`, `~/.codex/worktrees`, agent worktrees in `/tmp` | Seven checks: uncommitted changes, ignored files, changes hidden from git, commit on a branch, locked, in use by a program, last used |
-| Build folders | `node_modules`, `target`, `.next`, `.venv`, `Pods` | Only when the project file sits next to it. Safe once the project has been idle for 14 days |
-| Developer tools | Xcode DerivedData and device support, simulators whose runtime is gone | Xcode rebuilds or copies them again. Android images and Docker data are explained, not deleted |
-| Package caches | npm, Gradle, Cargo, uv, pip, CocoaPods | Downloaded again when a project needs them |
-| App caches | `~/Library/Caches`, web caches of Electron and Chromium apps | Apps rebuild them. Midden asks you to quit the app first |
-| AI tool data | `~/.claude`, `~/.codex`, Cursor, Antigravity, Gemini CLI | Conversation history and settings are explained, never deleted |
+| Build folders | `node_modules`, `target`, `.next`, `.venv`, `Pods`, SwiftPM's `.build` | Only when the project file sits next to it. Safe once the project has been idle for 14 days. In `.build`, Midden keeps what `swift package clean` keeps. Python environments are found by their `pyvenv.cfg` under any name and are always Review |
+| Developer tools | Xcode DerivedData and device support, simulators whose runtime is gone, extension versions VS Code marked for removal | Xcode rebuilds or copies them again. The newest device support version per platform is Review. Android images and Docker data are explained, not deleted |
+| Package caches | npm, Gradle, Cargo, uv, pip, CocoaPods, Yarn, Go, and the downloads of Poetry and pnpm | Downloaded again when a project needs them. Poetry's virtual environments and `pnpm dlx` packages are Review. renv's package library is never deleted |
+| App caches | `~/Library/Caches`, web caches of Electron apps, browsers' offline site data | Safe only for owners Midden knows, such as browsers' disk caches and Homebrew's downloads. Any other folder in Caches is Review, because being there doesn't prove it can be rebuilt. Browser profiles and offline site data are Review. Midden asks you to quit the app first |
+| Logs and Trash | `~/Library/Logs`, the Trash | Only log files older than 7 days are deleted, and every folder stays. Emptying the Trash is Review |
+| AI tool data | `~/.claude`, `~/.codex`, Cursor, Antigravity, Gemini CLI, Ollama and llama.cpp models | Conversation history, settings and models are explained, never deleted |
 | Your files | Large files, installers, Downloads, iPhone backups | Explained and never deleted for you. Large files and installers go to the Trash when you choose, so they can be restored |
 
 Every finding gets one of three levels:
@@ -50,8 +51,9 @@ A scan can be an hour old when you press Clean. So the cleaner trusts nothing fr
 
 1. The path must be inside your home folder, contain no symbolic links, and still match the same rule the scanner used.
 2. Worktrees are audited again. A worktree that got new changes in the meantime is refused, with the reason.
-3. If the app that owns a cache is running, Midden asks you to quit it first.
-4. Worktrees are removed with `git worktree remove`, without `--force`, so git itself refuses a worktree with changes.
+3. If the app that owns a cache is running, Midden asks you to quit it first. Some items also need that no program uses them: a download in progress, a browser started on a profile, a command run from a package cache. If one does, or Midden can't read every program, it refuses.
+4. A folder that holds something Midden keeps is never deleted as a whole. R's cache folder holds renv's package library, which your R projects link to, so Midden lists the parts of that folder separately and keeps the library.
+5. Worktrees are removed with `git worktree remove`, without `--force`, so git itself refuses a worktree with changes.
 
 ## Privacy
 
@@ -151,9 +153,9 @@ for finding in report.findings where finding.safety == .safe {
 
 Midden knows only the leftovers it has rules for. If a tool on your Mac leaves data behind that Midden doesn't explain yet, a new rule is the most useful contribution:
 
-1. Add a rule to [`Sources/MiddenCore/Rules.swift`](Sources/MiddenCore/Rules.swift). The explanation must say what the folder is and what deleting it costs.
+1. Add a rule to [`Sources/MiddenCore/Rules.swift`](Sources/MiddenCore/Rules.swift). The explanation must say what the folder is and what deleting it costs. A Safe rule needs a source for why the owner rebuilds the folder. If the owner keeps something there that must stay, add a rule for that part too: the folder then becomes a container, which Midden never deletes as a whole.
 2. Add a row for it to the rule table in [`Tests/MiddenCoreTests/RuleTests.swift`](Tests/MiddenCoreTests/RuleTests.swift).
-3. Run `swift test`. It never asks for a permission. Two tests that attach real disk images run only with `MIDDEN_MOUNT_TESTS=1`, and need your terminal to have access to removable volumes (System Settings, Privacy & Security, Files and Folders).
+3. Run `swift test`. It never asks for a permission. Three tests that attach real disk images run only with `MIDDEN_MOUNT_TESTS=1`, and need your terminal to have access to removable volumes (System Settings, Privacy & Security, Files and Folders).
 
 Bug reports and questions go to [Issues](https://github.com/bazarkua/midden/issues).
 

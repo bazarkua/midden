@@ -70,14 +70,42 @@ A directory is classified when the walker enters it, using only its path, its ow
 
 Two small values flow down the tree:
 
-- `Scope`: is this subtree already claimed by a finding, is it inside `~/Library`, is it inside a hidden top-level folder like `~/.vscode`. Nothing inside a claimed subtree is reported on its own, so sizes are never counted twice in the report.
-- `ProjectFacts`: which marker files the parent has (`package.json`, `Cargo.toml`, `Podfile` and others, as bit flags) and the newest modification time among its entries.
+- `Scope`: is this subtree already claimed by a finding, is it inside a container (below), is it inside `~/Library`, is it inside a hidden top-level folder like `~/.vscode`. Nothing inside a claimed subtree is reported on its own, so sizes are never counted twice in the report.
+- `ProjectFacts`: which marker files the parent has (`package.json`, `Cargo.toml`, `Podfile`, `Package.swift`, Chromium's `Preferences` and others, as bit flags) and the newest modification time among its entries. For a few folders it carries more: which DeviceSupport versions are the newest, and which VS Code extension versions VS Code would delete itself.
 
 `target` is a Rust build folder only when a `Cargo.toml` sits next to it. `node_modules` inside `~/.vscode/extensions` is not a build folder at all, because deleting it breaks the extension. The scope rules exist for cases like that.
 
 ### The rule catalog
 
 Known locations live in `Rules.swift` as a static array of values: a path pattern relative to home, a category, a safety level, a title, an explanation and an action. Adding a cache that Midden doesn't know yet is one new value and one row in the rule table test. The explanation sits next to the rule, so a reviewer sees what Midden will tell users in the same diff.
+
+The first matching rule wins. A rule can require something of the folder itself, and when the folder doesn't show it, the next rule applies. A Homebrew downloads folder holding an `.incomplete` file is Review, and without one it's Safe. A folder directly in `~/Library/Caches` or `~/.cache` that has a Chromium `Local State` file is a browser profile, with a warning about sign-ins. The newest DeviceSupport version per platform is Review, and the older ones are Safe. These checks use only the listing in hand, or a small file the folder names (`pyvenv.cfg`, VS Code's `.obsolete`), so classifying still costs no extra walk.
+
+### Unknown caches are Review
+
+`~/Library/Caches` is where macOS asks apps to keep files they can recreate, but nothing enforces it. Poetry keeps every project's virtual environment there, renv a package library its projects link into, Playwright MCP signed-in browser profiles, llama.cpp downloaded models. So a folder in Caches is Review by default, and its explanation says why. Safe is earned per owner, each with a source for why the owner rebuilds the folder:
+
+| Owner | Folder | Why it's rebuilt |
+|---|---|---|
+| pip | `Library/Caches/pip` | pip's cache directory on macOS, emptied by `pip cache purge` |
+| Yarn 1 | `Library/Caches/Yarn` | `getCacheDir` in yarnpkg/yarn's `user-dirs.js`, emptied by `yarn cache clean` |
+| Go | `Library/Caches/go-build` | `go help cache`: the build cache, emptied by `go clean -cache` |
+| CocoaPods | `Library/Caches/CocoaPods` | `cache_root` in CocoaPods' `config.rb`, emptied by `pod cache clean --all` |
+| Poetry | `Library/Caches/pypoetry/cache`, `artifacts` | `repository_cache_directory` and `artifacts_cache_directory` in Poetry's `config.py` |
+| pnpm | `Library/Caches/pnpm/*` except `dlx` | pnpm's settings docs: the cache holds package metadata, dlx and install checks |
+| Homebrew | `Library/Caches/Homebrew/downloads` | Packages `brew` downloads again when it needs them |
+| Chrome, Brave, Edge, Vivaldi, Arc, Dia | `Library/Caches/<browser>` (`<browser>/User Data` for Arc and Dia) | `GetUserCacheDirectory` in Chromium's `chrome_paths_mac.mm` keeps a profile's disk cache here, apart from the profile |
+| Slack, Claude, Obsidian, VS Code, Cursor, Antigravity | `Library/Application Support/<app>/{Cache,Code Cache,GPUCache}`, and `CachedData` for the VS Code family | Chromium's HTTP, script and shader caches, in a folder that still has Chromium's layout. VS Code deletes old `CachedData` itself (`codeCacheCleaner.ts`) |
+
+Spotify's cache folder isn't on the list: most of it is a streaming cache, but it also holds an embedded browser profile, and no Spotify documentation says what the app rebuilds. Without a source it stays Review.
+
+### Containers: a folder that holds something Midden keeps
+
+A rule used to claim its whole subtree, so nothing below it was ever classified. `Library/Caches/*` matched `org.R-project.R` as one Safe cache, the scan never looked inside, and cleaning it deleted renv's package library, which every renv project links into.
+
+Now a folder that a rule matches, and inside which another rule can match, is a container. The scanner keeps descending into it, but only rules apply there: no build folders, installers or worktrees. Folders no rule names stay part of the container. Its own finding is the remainder, its total minus the outermost findings inside it, so the findings inside partition it and nothing is counted twice. A container is never removable as a whole. A rule written for one must be Info with a manual action, which a test checks over the whole catalog, and a wildcard that happens to match one (Google's folder in Caches, which holds Chrome's cache) becomes an Info finding that says why. The cleaner classifies the same way, refuses the container, anything inside it that no rule names, and everything above it, and shows the same remainder in its plan.
+
+Containers today: R's cache folder (renv), Poetry's, pnpm's, Homebrew's, Playwright's (browsers and MCP profiles apart), the DeviceSupport folders, and VS Code's extensions folder.
 
 ### Three safety levels
 
@@ -130,6 +158,10 @@ So the cleaner takes only ids and works out everything again from zero:
 3. Worktrees are audited again. Simulators are queried again.
 4. If the owning app is running, it refuses and says which app to quit.
 5. When a tool has its own removal command, Midden uses it. Worktrees go through `git worktree remove` without `--force`, so git refuses a dirty worktree even if every check above missed something. Simulators go through `xcrun simctl delete`.
+
+Some folders may be emptied only in part, so the public action stays `removeContents` and the rule carries an engine-internal contents policy. The cleaner takes the policy from the rule it matches when cleaning, never from the scan. For `~/Library/Logs`, only regular files with one link, on the home folder's disk and modified at least 7 days ago are deleted. Every folder stays with its inode, mode, owner and ACL, because macOS doesn't recreate some of them: after another cleaner removed `DiagnosticReports`, crash reports couldn't be saved. For a SwiftPM `.build`, everything goes except what `swift package clean` keeps: `repositories`, `checkouts`, `artifacts` and `workspace-state.json`. Both work through descriptors. The folder is opened from home one component at a time with `O_NOFOLLOW`, everything below relative to its parent, nothing on another device is entered, and each Logs file is checked again with `fstatat` right before `unlinkat`. The finding shows only what the policy deletes, and the result reports the bytes actually removed.
+
+Some rules also need that no program uses the folder: pnpm's `dlx` packages, Playwright's browsers and profiles, Homebrew's downloads, browsers' offline site data, SwiftPM build products and old VS Code extensions. After the scan and again when cleaning, Midden reads every process of the user in-process: working directory, executable path and arguments. A process that runs from the folder, works in it, or names it in an argument (`--user-data-dir=<profile>`, `curl --output <download>`, `sh <script in a cache>`) makes the finding Info with "Quit ... first". So does a listing that couldn't read every process. A folder's age isn't used as evidence that nothing uses it. On the test Mac this reads 554 processes in about 0.45 s.
 
 Commands run through a small `posix_spawn` and `poll` runner instead of `Process`. It reads stdout and stderr together, so a chatty command can't fill one pipe and deadlock, it kills a command that hangs, and it skips the `/usr/bin/git` stub on Macs without developer tools so no install dialog appears. A timed-out command is killed with its whole process group. One that still hasn't exited 2 seconds later, or whose exit status can't be read (except ECHILD, which means it isn't ours), keeps a slot from a budget of 32, reserved before every command starts, until a reaper on one serial queue has reaped it (on its exit notification and on rechecks that back off from 10 ms to 1 s, since the notification can come before the child can be reaped); while the budget is used up, commands wait for a slot up to their own deadline and then fail without starting.
 
@@ -188,13 +220,19 @@ There are no third-party dependencies, including for argument parsing.
 
 ## Testing
 
-`swift test` runs 191 tests against real file systems in temp folders, and never raises a permission prompt. Two slow stress tests (a 5,000-level chain, a folder of 200,000 entries) run only with `MIDDEN_STRESS=1`. Two tests that attach real disk images run only with `MIDDEN_MOUNT_TESTS=1`: macOS treats a mounted image as a removable volume, so the terminal needs access to removable volumes (Privacy & Security, Files and Folders), and without it macOS asks; by default the mount guard is covered with an injected mount table instead. Older revisions, from `b7963d5` up to the one before `6e6a9be` ("Run the disk-image mount tests only on request"), attach real disk images on every run, and `MIDDEN_MOUNT_TESTS` can't turn that off there: to test one of them unattended, for example while bisecting, skip those tests by name with `swift test --skip "refusesAFolderWithADiskMountedInside|refusesAMountAttachedThroughAnotherSpelling"`. The CLI test is skipped if the built `midden` binary is older than the sources. All the others pass, and eight cleaner race cases among them pass by recording known issues (see Known limits): they turn into failures once those races are closed. Every git command in the tests runs with the machine's git configuration switched off and git's automatic background maintenance disabled. Without that, a `git commit` in a test sometimes left `git maintenance` running in the worktree for a few milliseconds, and the cleaner correctly refused to remove a worktree a program was working in. A probe measured it: 12 of 80 commits left such a process behind with maintenance on, 0 of 80 with it off.
+`swift test` runs 241 tests against real file systems in temp folders, and never raises a permission prompt. Two slow stress tests (a 5,000-level chain, a folder of 200,000 entries) run only with `MIDDEN_STRESS=1`. Three tests that attach real disk images run only with `MIDDEN_MOUNT_TESTS=1`: macOS treats a mounted image as a removable volume, so the terminal needs access to removable volumes (Privacy & Security, Files and Folders), and without it macOS asks; by default the mount guard is covered with an injected mount table instead. Older revisions, from `b7963d5` up to the one before `6e6a9be` ("Run the disk-image mount tests only on request"), attach real disk images on every run, and `MIDDEN_MOUNT_TESTS` can't turn that off there: to test one of them unattended, for example while bisecting, skip those tests by name with `swift test --skip "refusesAFolderWithADiskMountedInside|refusesAMountAttachedThroughAnotherSpelling"`. The CLI test is skipped if the built `midden` binary is older than the sources. All the others pass, and eight cleaner race cases among them pass by recording known issues (see Known limits): they turn into failures once those races are closed. Every git command in the tests runs with the machine's git configuration switched off and git's automatic background maintenance disabled. Without that, a `git commit` in a test sometimes left `git maintenance` running in the worktree for a few milliseconds, and the cleaner correctly refused to remove a worktree a program was working in. A probe measured it: 12 of 80 commits left such a process behind with maintenance on, 0 of 80 with it off.
 
 The tests cover:
 
 - the directory reader against `lstat` for symlinks, sparse files, Unicode names and a directory large enough to need several bulk calls
 - scanner totals against `du -sk`, hard links, symlinks
-- a 29-row rule table and 19 build-folder cases, including the `~/.vscode` exclusion
+- a 64-row rule table and 19 build-folder cases, including the `~/.vscode` exclusion
+- protected folders end to end: scan, plan and clean a fake home, and renv's library, Poetry's environments, pnpm's `dlx`, llama.cpp's models and Playwright MCP's profiles survive cleaning everything above them, while the findings inside a container partition its size
+- the Review default for unknown caches and every known Safe owner, Electron caches only with the owner's Chromium layout (and Cookies, Login Data, IndexedDB and Local Storage kept), Homebrew's api and bootsnap kept
+- Logs: old and recent, future-dated and zero-dated files, hard links, symlinks to folders outside home, a folder's inode, mode and ACL kept, unreadable folders and undeletable files, a listing that stops partway, files changed between listing and delete, symlinks swapped in at every stage, and a disk mounted inside after the last check
+- "not in use" checks with real processes (a script run from a cache with its working directory elsewhere, a browser started on a profile, a download being written) and with an incomplete process listing
+- DeviceSupport versions: numeric order, builds, ties, unreadable names, an incomplete listing and versions changing after the scan
+- SwiftPM `.build` cleaned like `swift package clean`, Python environments by `pyvenv.cfg`, VS Code's obsolete-extension predicate, browsers' offline site data per profile, and the `hf cache` commands against a versioned help fixture
 - worktree audits on real temporary git repositories: clean, dirty, detached commit, locked, in use by a real child process, bare repositories, worktrees outside home and a forged back-link
 - every check failing closed: an incomplete process list, an unknown activity date, an unreadable home
 - the watchdog with an injected reader that blocks forever, and one that is slow but alive
@@ -218,5 +256,7 @@ The tests cover:
   The fix for files Midden deletes itself is a delete through descriptors instead of paths. Open each component from home with `openat(O_NOFOLLOW | O_DIRECTORY)`, check device and inode with `fstat` against what validation recorded, and delete with `unlinkat` relative to the descriptors held, never by path again. A short-lived approval record would carry the identity, the rule, the action and the safety level the user approved from plan to clean, and the cleaner would refuse when any of them changed or the safety got worse. Git and simctl removals can't work that way: they stay delegated to their tools, which take a path, so the best Midden can do there is a last identity check right before the command, and a window remains between that check and the tool's own work.
 - Paths longer than PATH_MAX (1024 bytes): the scan walks them, opening each one in pieces relative to the previous descriptor; that is tested to 5,000 levels. Splitting the path doesn't add symlink protection beyond what one `open()` had: only the last component of each piece is opened with `O_NOFOLLOW`. The cleaner doesn't support such paths: it checks and deletes by path, and nothing in it has been tested past PATH_MAX.
 - The running-app check matches by bundle id or display name, so it can miss an app whose process name is different.
-- Build folders don't check for a dev server running in the project yet.
+- Build folders don't check for a dev server running in the project yet, except SwiftPM's `.build`, which gets the "not in use" check.
+- The "not in use" check sees what a process names, runs from or works in. A program that holds a file open without naming it, or one that starts between the check and the delete, isn't seen.
+- VS Code profiles are read from `extensions.json` in the extensions folder, in `User` and in `User/profiles/*`. The profiles folder layout comes from VS Code's source and wasn't seen on the test Mac, which has no extra profiles.
 - The watchdog is tested with an injected blocking reader. A real privacy prompt could not be triggered on the test Mac.
