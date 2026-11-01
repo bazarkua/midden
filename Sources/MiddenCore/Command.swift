@@ -161,11 +161,16 @@ enum Command {
             pollfd(fd: outputPipe[0], events: Int16(POLLIN), revents: 0),
             pollfd(fd: errorPipe[0], events: Int16(POLLIN), revents: 0),
         ]
-        let deadline = Date(timeIntervalSinceNow: timeout)
+        // A monotonic deadline: the wall clock can jump.
+        let deadline = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + UInt64(max(timeout, 0) * 1e9)
+        func secondsLeft() -> Double {
+            let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+            return now >= deadline ? 0 : Double(deadline - now) / 1e9
+        }
         var killed = false
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while fds.contains(where: { $0.fd >= 0 }) {
-            let remaining = deadline.timeIntervalSinceNow
+            let remaining = secondsLeft()
             if remaining <= 0 {
                 kill(pid, SIGKILL)
                 killed = true
@@ -185,10 +190,30 @@ enum Command {
         }
         for fd in fds where fd.fd >= 0 { close(fd.fd) }
 
+        // The deadline holds until the child exits: one that closes stdout
+        // and stderr and keeps running must not be waited for without limit.
         var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
-        // WIFEXITED / WEXITSTATUS, which Swift doesn't import.
-        let exited = status & 0x7f == 0
+        var reaped = false
+        while true {
+            let result = waitpid(pid, &status, killed ? 0 : WNOHANG)
+            if result == pid {
+                reaped = true
+                break
+            }
+            if result < 0 {
+                if errno == EINTR { continue }
+                break  // Not our child any more: the status is unknown.
+            }
+            if secondsLeft() <= 0 {
+                kill(pid, SIGKILL)
+                killed = true
+            } else {
+                usleep(5_000)
+            }
+        }
+        // WIFEXITED / WEXITSTATUS, which Swift doesn't import. An unknown
+        // status is a failure, never a success.
+        let exited = reaped && status & 0x7f == 0
         let error = String(decoding: collected[1], as: UTF8.self)
         return CommandResult(
             status: exited && !killed ? (status >> 8) & 0xff : -1,
