@@ -66,16 +66,47 @@ enum System {
     }
 }
 
+/// Threads started by `withDeadline` calls that share this value and haven't
+/// finished: a timed-out call leaves its thread running, maybe forever.
+final class DeadlineThreads: Sendable {
+    let limit: Int
+    private let running = Atomic<Int>(0)
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    var count: Int { running.load(ordering: .relaxed) }
+
+    func admit() -> Bool {
+        var current = running.load(ordering: .relaxed)
+        while current < limit {
+            let (exchanged, original) = running.compareExchange(
+                expected: current, desired: current + 1, ordering: .relaxed)
+            if exchanged { return true }
+            current = original
+        }
+        return false
+    }
+
+    func release() {
+        running.subtract(1, ordering: .relaxed)
+    }
+}
+
 extension System {
     /// Runs blocking work on its own thread and waits at most `seconds`.
     /// Returns nil on timeout; the work then finishes, or stays blocked, on
-    /// its own thread.
+    /// its own thread. With `threads`, at most its limit of those threads
+    /// run at once: past it the call returns nil without starting another.
     static func withDeadline<T: Sendable>(
-        _ seconds: TimeInterval, _ work: @escaping @Sendable () -> T
+        _ seconds: TimeInterval, threads: DeadlineThreads? = nil, _ work: @escaping @Sendable () -> T
     ) -> T? {
+        if let threads, !threads.admit() { return nil }
         let box = LockedBox<T>()
         let done = DispatchSemaphore(value: 0)
         Thread {
+            defer { threads?.release() }
             let result = work()
             box.value.withLock { $0 = result }
             done.signal()

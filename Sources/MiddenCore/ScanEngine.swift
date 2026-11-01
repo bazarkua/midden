@@ -47,6 +47,8 @@ struct ScanEngine {
         } catch {
             throw MiddenError.unreadable(path: home, code: error.code.rawValue)
         }
+        // Taken out of the delegate, which a stuck walker thread may keep.
+        let collected = delegate.takeCollected()
         if cancellation.isCancelled { throw MiddenError.cancelled }
         // An empty report would read as "nothing to clean".
         if let rootError = walk.rootError {
@@ -87,7 +89,7 @@ struct ScanEngine {
         // One counted pass checks every worktree: those outside home are
         // sized first with the same walker (and dropped if too small), then
         // each is audited. Several run at once, so each walker gets 2 threads.
-        let external = ExternalWorktrees.discover(gitDirectories: delegate.gitDirectories, home: home)
+        let external = ExternalWorktrees.discover(gitDirectories: collected.gitDirectories, home: home)
         // Those outside home first: sizing them is the slow part, and
         // starting it early keeps the tail of the phase short.
         let candidates =
@@ -125,7 +127,7 @@ struct ScanEngine {
         // One finding per file: hard links to the same file are reported once,
         // under the first of their paths.
         var linked: [UInt64: [ScanDelegate.FileHit]] = [:]
-        for hit in delegate.files where hit.entry.allocatedSize >= minimum {
+        for hit in collected.files where hit.entry.allocatedSize >= minimum {
             if hit.entry.linkCount > 1 {
                 linked[hit.entry.inode, default: []].append(hit)
             } else {
@@ -171,7 +173,7 @@ struct ScanEngine {
             spaceMap: spaceMap,
             skippedWithoutFullDiskAccess: walk.skipped,
             readErrors: walk.readErrors,
-            skippedFolders: delegate.skippedFolders)
+            skippedFolders: collected.skippedFolders)
     }
 }
 

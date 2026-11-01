@@ -145,6 +145,8 @@ Whether Full Disk Access is granted is probed by listing `~/Library/Safari`, `~/
 
 For everything else there is a watchdog. Each worker publishes the folder it is listing and bumps a heartbeat after every batch from `getattrlistbulk`, so a huge folder that is still being read keeps beating while a blocked `open()` does not. After 5 seconds without a beat, a supervisor claims the folder with a compare-and-swap, counts it as unreadable, completes its parent's countdown and starts a replacement worker. If the stuck call returns later, its result loses the same compare-and-swap and is dropped. The walk never waits for it.
 
+A stuck thread can't be killed, so walker threads are bounded across every walk in the process: each takes a slot from a shared budget before it starts and gives it back only when it really exits, which for a stuck thread is when its call returns. With every slot held by stuck threads, a new walk doesn't start and reports its root unreadable. A folder whose listing is still stuck from an earlier scan is counted as stalled instead of being tried again, and the listing's record is settled under one lock, so a call that returns while being given up never stays registered. The Full Disk Access probe, which has its own deadline, can leave at most two threads behind.
+
 ## 5. Honest progress
 
 A progress bar is only honest if it knows the total, and a scan doesn't know the total until it ends. The estimate works like this:

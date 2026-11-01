@@ -46,9 +46,14 @@ public enum FullDiskAccess {
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Bool {
         let path = (try? System.canonicalPath(home.path)) ?? home.path
-        return System.withDeadline(WalkDefaults.stallTimeout) { System.fullDiskAccessProbe(home: path) == true }
-            ?? false
+        return System.withDeadline(WalkDefaults.stallTimeout, threads: probeThreads) {
+            System.fullDiskAccessProbe(home: path) == true
+        } ?? false
     }
+
+    /// Probes still blocked from earlier calls. Past two, the answer is "no
+    /// access" without starting another.
+    static let probeThreads = DeadlineThreads(limit: 2)
 
     /// `isGranted(home:)` without blocking the caller: the probe runs on its
     /// own thread. (Not an `async` overload of `isGranted`, which would make

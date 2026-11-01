@@ -44,6 +44,24 @@ final class ScanDelegate: WalkDelegate {
         self.skipProtected = skipProtected
     }
 
+    struct Collected {
+        var files: [FileHit]
+        var gitDirectories: [String]
+        var skippedFolders: [String]
+    }
+
+    /// Hands over what the walk collected and empties the delegate. A
+    /// walker thread stuck in a listing keeps the delegate alive, possibly
+    /// forever; it shouldn't keep the scan's findings alive with it.
+    func takeCollected() -> Collected {
+        let skipped = skippedFolders
+        skippedPaths.withLock { $0 = [] }
+        return Collected(
+            files: fileHits.withLock { hits in defer { hits = [] }; return hits },
+            gitDirectories: repositories.withLock { paths in defer { paths = [] }; return paths },
+            skippedFolders: skipped)
+    }
+
     private func protectedFolders(in relative: [String]?, _ entries: [DirectoryEntry]) -> [String] {
         guard skipProtected, let relative else { return [] }
         let names = PrivacyProtected.skipped(in: relative, entries: entries)

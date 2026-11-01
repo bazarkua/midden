@@ -57,7 +57,7 @@ private final class WeakRecord {
         let entered = Counter()
         let walker = Walker(
             root: dir.path, delegate: SizeOnly(), threadCount: 2, stallTimeout: 0.05,
-            stuckListings: StuckListings(limit: 32)
+            threads: WalkerThreads(limit: 32)
         ) { path, reader throws(POSIXError) in
             if (path as NSString).lastPathComponent.hasPrefix("blocked-") {
                 entered.increment()
@@ -88,11 +88,11 @@ private final class WeakRecord {
         let gate = Gate()
         defer { gate.open() }
         let entered = Counter()
-        let budget = StuckListings(limit: 6)
+        let budget = WalkerThreads(limit: 6)
         func walk() throws -> WalkResult<Never> {
             try Walker(
                 root: dir.path, delegate: SizeOnly(), threadCount: 2, stallTimeout: 0.05,
-                stuckListings: budget
+                threads: budget
             ) { path, reader throws(POSIXError) in
                 if (path as NSString).lastPathComponent.hasPrefix("blocked-") {
                     entered.increment()
@@ -109,24 +109,191 @@ private final class WeakRecord {
             enteredAfter.append(entered.count)
             rootErrors.append(result.rootError?.code)
         }
-        // A walk only starts threads while the count is under the limit, but
-        // each one it starts may block too: the bound is limit + threads - 1.
-        let bound = budget.limit + 2 - 1
-        #expect(enteredAfter.last! <= bound, "\(enteredAfter)")
+        // Each thread holds a slot until it really exits, so stuck threads
+        // never exceed the limit, however many walks run.
+        #expect(enteredAfter.last! <= budget.limit, "\(enteredAfter)")
         #expect(enteredAfter.suffix(3).allSatisfy { $0 == enteredAfter.last }, "\(enteredAfter)")
-        #expect(budget.count <= bound)
-        // At the limit a walk doesn't start: it reports its root unreadable
-        // rather than adding a thread.
+        #expect(budget.highWater <= budget.limit)
+        // With every slot held by a stuck thread, a walk doesn't start: it
+        // reports its root unreadable rather than adding a thread.
         #expect(rootErrors.last == .ETIMEDOUT, "\(rootErrors)")
 
         gate.open()
         let deadline = Date(timeIntervalSinceNow: 5)
-        while budget.count > 0, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
-        #expect(budget.count == 0)
-        let recovered = try Walker(root: dir.path, delegate: SizeOnly(), stuckListings: budget).run()
+        while budget.held > 0 || budget.abandonedCount > 0, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        #expect(budget.held == 0)
+        #expect(budget.abandonedCount == 0)
+        let recovered = try Walker(root: dir.path, delegate: SizeOnly(), threads: budget).run()
         #expect(recovered.rootError == nil)
         #expect(recovered.readErrors == 0)
         #expect(recovered.items == 20)
+    }
+
+    /// Walks running at the same time share the budget: they can't all see
+    /// a free slot and start threads past it.
+    @Test func concurrentWalksShareATinyBudget() throws {
+        let dir = try TempDir()
+        for index in 0..<8 {
+            try dir.write("blocked-\(index)/file.bin", bytes: 1_000)
+        }
+        let gate = Gate()
+        defer { gate.open() }
+        let budget = WalkerThreads(limit: 3)
+        let entered = Counter()
+        let root = dir.path
+        let finished = Counter()
+        for _ in 0..<4 {
+            Thread {
+                _ = try? Walker(
+                    root: root, delegate: SizeOnly(), threadCount: 2, stallTimeout: 0.05, threads: budget
+                ) { path, reader throws(POSIXError) in
+                    if (path as NSString).lastPathComponent.hasPrefix("blocked-") {
+                        entered.increment()
+                        gate.wait()
+                    }
+                    return try reader.listing(atPath: path)
+                }.run()
+                finished.increment()
+            }.start()
+        }
+        let deadline = Date(timeIntervalSinceNow: 10)
+        while finished.count < 4, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(finished.count == 4, "walks didn't finish")
+        #expect(budget.highWater <= 3)
+        #expect(entered.count <= 3, "\(entered.count) listings blocked")
+
+        gate.open()
+        let drained = Date(timeIntervalSinceNow: 5)
+        while budget.held > 0, Date() < drained { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(budget.held == 0)
+    }
+
+    /// Slots held by other walks' running threads come back as soon as
+    /// those walks finish: a walk that finds none free waits for one
+    /// instead of reporting its root unreadable.
+    @Test func busyButHealthyWalksDontStarveEachOther() throws {
+        let dir = try TempDir()
+        for index in 0..<6 {
+            try dir.write("folder-\(index)/file.bin", bytes: 1_000)
+        }
+        let budget = WalkerThreads(limit: 2)
+        let root = dir.path
+        let errors = Counter()
+        let finished = Counter()
+        for _ in 0..<6 {
+            Thread {
+                let result = try? Walker(
+                    root: root, delegate: SizeOnly(), threadCount: 2, threads: budget
+                ) { path, reader throws(POSIXError) in
+                    usleep(20_000)  // Slow enough for the walks to overlap.
+                    return try reader.listing(atPath: path)
+                }.run()
+                if result?.rootError != nil || result?.readErrors != 0 { errors.increment() }
+                finished.increment()
+            }.start()
+        }
+        let deadline = Date(timeIntervalSinceNow: 20)
+        while finished.count < 6, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(finished.count == 6)
+        #expect(errors.count == 0, "\(errors.count) walks couldn't start")
+        #expect(budget.highWater <= 2)
+    }
+
+    /// The listing returns in the gap between the watchdog giving it up and
+    /// registering it as abandoned. It must not stay registered: that would
+    /// make every later scan skip a folder that reads fine.
+    @Test func aListingThatReturnsWhileBeingGivenUpIsNotLeftRegistered() throws {
+        let dir = try TempDir()
+        try dir.write("slow/file.bin", bytes: 1_000)
+        let slow = dir.path("slow")
+        let gate = Gate()
+        defer { gate.open() }
+        let visits = Counter()
+        let budget = WalkerThreads(limit: 8)
+        let lister: Walker<SizeOnly>.Lister = { path, reader throws(POSIXError) in
+            if path == slow {
+                visits.increment()
+                gate.wait()
+            }
+            return try reader.listing(atPath: path)
+        }
+        let first = try Walker(
+            root: dir.path, delegate: SizeOnly(), threadCount: 1, stallTimeout: 0.1, threads: budget,
+            lister: lister,
+            afterGivingUp: { operation in
+                // Let the call return now, and wait until it has.
+                gate.open()
+                let deadline = Date(timeIntervalSinceNow: 5)
+                while !operation.isReturned, Date() < deadline { usleep(1_000) }
+            }
+        ).run()
+        #expect(first.stalled == [slow])
+        #expect(budget.abandonedCount == 0)
+        #expect(!budget.isAbandoned(slow))
+
+        let second = try Walker(root: dir.path, delegate: SizeOnly(), threads: budget, lister: lister).run()
+        #expect(visits.count == 2, "the next scan didn't visit the folder")
+        #expect(second.readErrors == 0)
+        #expect(second.stalled.isEmpty)
+    }
+
+    /// The scan's own delegate collects every large file and repository it
+    /// sees. A stuck thread keeps the walker, and so the delegate, alive:
+    /// once the scan has taken what it collected, nothing may be left there.
+    @Test func aStuckThreadDoesNotKeepTheDelegatesCollections() throws {
+        let home = try TempDir("home")
+        try home.write("blocked/file.bin", bytes: 1_000)
+        for index in 0..<5 {
+            try home.write("Downloads/Setup-\(index).pkg", bytes: 100_000_000)
+        }
+        try home.mkdir("repo/.git/worktrees/wt")
+        let blocked = home.path("blocked")
+        let gate = Gate()
+        defer { gate.open() }
+        let delegate = ScanDelegate(skipProtected: false)
+        let result = try Walker(
+            root: home.path, delegate: delegate, threadCount: 2, stallTimeout: 0.1,
+            threads: WalkerThreads(limit: 32)
+        ) { path, reader throws(POSIXError) in
+            if path == blocked { gate.wait() }
+            return try reader.listing(atPath: path)
+        }.run()
+        #expect(result.stalled == [blocked])
+
+        let collected = delegate.takeCollected()
+        #expect(collected.files.count == 5)
+        #expect(collected.gitDirectories == [home.path("repo/.git")])
+        // The blocked thread still holds the walker and the delegate here.
+        #expect(delegate.files.isEmpty)
+        #expect(delegate.gitDirectories.isEmpty)
+        #expect(delegate.skippedFolders.isEmpty)
+    }
+
+    /// Each timed-out probe leaves its thread running; repeated probes that
+    /// all block must not pile up threads without limit.
+    @Test func timedOutProbesDontPileUpThreads() {
+        let gate = Gate()
+        defer { gate.open() }
+        let threads = DeadlineThreads(limit: 2)
+        let started = Counter()
+        for _ in 0..<6 {
+            let answer = System.withDeadline(0.05, threads: threads) { () -> Bool in
+                started.increment()
+                gate.wait()
+                return true
+            }
+            #expect(answer == nil)
+        }
+        #expect(started.count == 2)
+        #expect(threads.count == 2)
+
+        gate.open()
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while threads.count > 0, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(threads.count == 0)
+        #expect(System.withDeadline(1, threads: threads) { true } == true)
     }
 
     /// A stuck thread references the walker. It must not keep everything
@@ -144,7 +311,7 @@ private final class WeakRecord {
         do {
             let result = try Walker(
                 root: dir.path, delegate: MarkAll(), threadCount: 2, stallTimeout: 0.1,
-                stuckListings: StuckListings(limit: 32)
+                threads: WalkerThreads(limit: 32)
             ) { path, reader throws(POSIXError) in
                 if path == blocked { gate.wait() }
                 return try reader.listing(atPath: path)
@@ -171,7 +338,7 @@ private final class WeakRecord {
         defer { gate.open() }
         let walker = Walker(
             root: dir.path, delegate: SizeOnly(), threadCount: 2, stallTimeout: 0.15,
-            stuckListings: StuckListings(limit: 32)
+            threads: WalkerThreads(limit: 32)
         ) { path, reader throws(POSIXError) in
             if path == blocked { gate.wait() }
             if path == slow {
@@ -204,7 +371,7 @@ private final class WeakRecord {
         defer { gate.open() }
         let walker = Walker(
             root: dir.path, delegate: SizeOnly(), threadCount: 2, stallTimeout: 0.1,
-            stuckListings: StuckListings(limit: 32)
+            threads: WalkerThreads(limit: 32)
         ) { path, reader throws(POSIXError) in
             if path == blocked { gate.wait() }
             return try reader.listing(atPath: path)
@@ -231,7 +398,7 @@ private final class WeakRecord {
         let flag = CancellationFlag()
         let walker = Walker(
             root: dir.path, delegate: SizeOnly(), threadCount: 2, stallTimeout: 60,
-            stuckListings: StuckListings(limit: 32)
+            threads: WalkerThreads(limit: 32)
         ) { path, reader throws(POSIXError) in
             if (path as NSString).lastPathComponent.hasPrefix("blocked-") { gate.wait() }
             return try reader.listing(atPath: path)
@@ -259,7 +426,7 @@ private final class WeakRecord {
         defer { gate.open() }
         let walker = Walker(
             root: dir.path, delegate: SizeOnly(), threadCount: 1, stallTimeout: 0.1,
-            stuckListings: StuckListings(limit: 32)
+            threads: WalkerThreads(limit: 32)
         ) { path, reader throws(POSIXError) in
             if path == blocked { gate.wait() }
             return try reader.listing(atPath: path)
