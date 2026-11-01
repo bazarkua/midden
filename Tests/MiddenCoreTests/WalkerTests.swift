@@ -132,7 +132,7 @@ private func duBytes(_ path: String) throws -> Int64 {
             root: dir.path, delegate: SizeOnly(), threadCount: 2, stallTimeout: 0.3
         ) { path, reader throws(POSIXError) in
             if path == blocked { gate.wait() }
-            return try reader.entries(atPath: path)
+            return try reader.listing(atPath: path)
         }
 
         let start = Date()
@@ -154,7 +154,7 @@ private func duBytes(_ path: String) throws -> Int64 {
         let root = dir.path
         let walker = Walker(root: root, delegate: SizeOnly(), stallTimeout: 0.2) { path, reader throws(POSIXError) in
             if path == root { gate.wait() }
-            return try reader.entries(atPath: path)
+            return try reader.listing(atPath: path)
         }
         let result = try walker.run()
         #expect(result.rootError?.code == .ETIMEDOUT)
@@ -173,7 +173,7 @@ private func duBytes(_ path: String) throws -> Int64 {
                     reader.onBatch?()
                 }
             }
-            return try reader.entries(atPath: path)
+            return try reader.listing(atPath: path)
         }
         let result = try walker.run()
         #expect(result.stalled.isEmpty)

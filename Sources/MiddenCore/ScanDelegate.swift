@@ -61,10 +61,12 @@ final class ScanDelegate: WalkDelegate {
     func visit(_ dir: VisitedDirectory<Context>) -> Visit<Context, DirectoryMatch> {
         if dir.depth == 0 {
             recordFiles(dir.entries, in: dir.path, scope: Scope())
+            // With part of home's listing missing, its marker files are unknown.
             return Visit(
                 mark: nil,
                 childContext: Context(
-                    parentRelative: [], scope: Scope(), parent: ProjectFacts(entries: dir.entries)),
+                    parentRelative: [], scope: Scope(),
+                    parent: dir.isComplete ? ProjectFacts(entries: dir.entries) : .none),
                 unreadable: protectedFolders(in: [], dir.entries))
         }
         let context = dir.context
@@ -76,6 +78,21 @@ final class ScanDelegate: WalkDelegate {
         if context.scope.claimed {
             return Visit(
                 mark: nil, childContext: context, unreadable: protectedFolders(in: relative, dir.entries))
+        }
+        // Part of the listing is missing: what's absent (a `.git` file, a
+        // marker, a newer file) can't count as evidence, so neither this
+        // folder nor anything inside it is classified. The cleaner, which
+        // lists strictly, refuses anything here too.
+        if !dir.isComplete {
+            var inner = context.scope
+            inner.claimed = true
+            return Visit(
+                mark: nil,
+                childContext: Context(
+                    parentRelative: relative.flatMap { $0.count < RuleCatalog.maxDepth ? $0 : nil },
+                    scope: inner, parent: .none),
+                excluded: Classifier.excludedChildren(of: relative),
+                unreadable: protectedFolders(in: relative, dir.entries))
         }
         let (match, inner) = Classifier.classify(DirectoryFacts(
             path: dir.path, name: dir.name, relative: relative, scope: context.scope,

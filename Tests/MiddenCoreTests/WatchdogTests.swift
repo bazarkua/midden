@@ -63,7 +63,7 @@ private final class WeakRecord {
                 entered.increment()
                 gate.wait()
             }
-            return try reader.entries(atPath: path)
+            return try reader.listing(atPath: path)
         }
 
         let start = Date()
@@ -98,7 +98,7 @@ private final class WeakRecord {
                     entered.increment()
                     gate.wait()
                 }
-                return try reader.entries(atPath: path)
+                return try reader.listing(atPath: path)
             }.run()
         }
 
@@ -147,7 +147,7 @@ private final class WeakRecord {
                 stuckListings: StuckListings(limit: 32)
             ) { path, reader throws(POSIXError) in
                 if path == blocked { gate.wait() }
-                return try reader.entries(atPath: path)
+                return try reader.listing(atPath: path)
             }.run()
             #expect(result.stalled == [blocked])
             records = result.marked.filter { $0.path.hasPrefix(dir.path("kept-")) }.map(WeakRecord.init)
@@ -182,7 +182,7 @@ private final class WeakRecord {
                     reader.onBatch?()
                 }
             }
-            return try reader.entries(atPath: path)
+            return try reader.listing(atPath: path)
         }
         let result = try walker.run()
         #expect(result.stalled == [blocked])
@@ -207,7 +207,7 @@ private final class WeakRecord {
             stuckListings: StuckListings(limit: 32)
         ) { path, reader throws(POSIXError) in
             if path == blocked { gate.wait() }
-            return try reader.entries(atPath: path)
+            return try reader.listing(atPath: path)
         }
         let result = try walker.run()
         #expect(result.stalled == [blocked])
@@ -234,7 +234,7 @@ private final class WeakRecord {
             stuckListings: StuckListings(limit: 32)
         ) { path, reader throws(POSIXError) in
             if (path as NSString).lastPathComponent.hasPrefix("blocked-") { gate.wait() }
-            return try reader.entries(atPath: path)
+            return try reader.listing(atPath: path)
         }
         // Its own thread: under a full test run GCD's pool can be busy.
         Thread {
@@ -262,7 +262,7 @@ private final class WeakRecord {
             stuckListings: StuckListings(limit: 32)
         ) { path, reader throws(POSIXError) in
             if path == blocked { gate.wait() }
-            return try reader.entries(atPath: path)
+            return try reader.listing(atPath: path)
         }
         let result = try walker.run()
         #expect(result.stalled == [blocked])

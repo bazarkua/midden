@@ -104,6 +104,10 @@ struct VisitedDirectory<Context: Sendable> {
     /// What the parent's visit handed down.
     var context: Context
     var entries: [DirectoryEntry]
+    /// False when some entries couldn't be read: `entries` is then only
+    /// part of the folder, and nothing should be concluded from what's
+    /// missing (a marker file, a `.git` file).
+    var isComplete = true
 }
 
 struct Visit<Context: Sendable, Mark: Sendable> {
@@ -190,7 +194,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     typealias Mark = Delegate.Mark
 
     /// Lists a folder. Replaceable in tests to simulate a folder that blocks.
-    typealias Lister = @Sendable (_ path: String, _ reader: DirectoryReader) throws(POSIXError) -> [DirectoryEntry]
+    typealias Lister = @Sendable (_ path: String, _ reader: DirectoryReader) throws(POSIXError) -> DirectoryListing
 
     let root: String
     let delegate: Delegate
@@ -223,7 +227,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         stallTimeout: TimeInterval = WalkDefaults.stallTimeout,
         mapFloor: Int64? = nil,
         stuckListings: StuckListings = .process,
-        lister: @escaping Lister = { path, reader throws(POSIXError) in try reader.entries(atPath: path) }
+        lister: @escaping Lister = { path, reader throws(POSIXError) in try reader.listing(atPath: path) }
     ) {
         self.root = root
         self.delegate = delegate
@@ -379,14 +383,18 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
 
     /// Counts a folder that couldn't be listed and finishes it.
     private func failed(_ node: Node, code: Int32) {
-        // Gone since its parent was listed, or not downloaded: not an error.
-        if ![ENOENT, ENOTDIR, EDEADLK].contains(code) {
+        if !Self.isBenign(code) {
             unreadable.add(1, ordering: .relaxed)
         }
         if node.depth == 0 { rootError.store(code, ordering: .relaxed) }
         if node.remaining.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 {
             complete(node, record: nil)
         }
+    }
+
+    /// Gone since its parent was listed, or not downloaded: not an error.
+    private static func isBenign(_ code: Int32) -> Bool {
+        [ENOENT, ENOTDIR, EDEADLK].contains(code)
     }
 
     private struct Kept {
@@ -414,9 +422,16 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             return nil
         }
         let entries: [DirectoryEntry]
+        let isComplete: Bool
         switch listing {
         case .success(let listed):
-            entries = listed
+            // What was read is counted, once; what wasn't makes the folder
+            // a read error, so the total is visibly incomplete.
+            entries = listed.entries
+            isComplete = listed.isComplete
+            if let error = listed.error, !Self.isBenign(error.code.rawValue) {
+                unreadable.add(1, ordering: .relaxed)
+            }
         case .failure(let error):
             failed(node, code: error.code.rawValue)
             return Kept(next: nil)
@@ -424,7 +439,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
 
         let visit = delegate.visit(VisitedDirectory(
             path: node.path, name: node.name, depth: node.depth,
-            context: node.context, entries: entries))
+            context: node.context, entries: entries, isComplete: isComplete))
         var record: SizedDirectory<Mark>?
         if visit.mark != nil || node.depth == 0 {
             let sized = SizedDirectory(path: node.path, mark: visit.mark)
