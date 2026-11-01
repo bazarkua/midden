@@ -46,6 +46,34 @@ func runScript(_ script: String, from directory: String) throws -> Process {
         return home
     }
 
+    /// pnpm's docs name what `pnpm store prune` removes: the metadata*
+    /// folders of the cache, also in versioned folders such as
+    /// v12/metadata, and they keep every other cache. Only those are Safe;
+    /// an unknown folder and a versioned cache holding programs stay in
+    /// the protected rest of the folder.
+    @Test func pnpmMetadataIsSafeAndEverythingElseIsKept() async throws {
+        let home = try makePnpmHome()
+        let safe = ["metadata", "metadata-full-v1.3", "v12/metadata", "v10/metadata-v1.1"]
+        for folder in safe { try home.write("\(Self.pnpm)/\(folder)/registry.npmjs.org/x.json", bytes: 50_000) }
+        let program = try home.write("\(Self.pnpm)/v12/exec/node_modules/.bin/tool", text: "#!/bin/sh\n")
+        let unknown = try home.write("\(Self.pnpm)/unknown-cache/data", bytes: 50_000)
+        let unversioned = try home.write("\(Self.pnpm)/vendor/metadata/x.json", bytes: 50_000)
+        let (report, byPath) = try await scanAll(home)
+
+        for folder in safe {
+            #expect(byPath[home.path("\(Self.pnpm)/\(folder)")]?.safety == .safe, "\(folder)")
+        }
+        for folder in ["v12/exec", "unknown-cache", "vendor/metadata", "vendor", "v12"] {
+            #expect(byPath[home.path("\(Self.pnpm)/\(folder)")] == nil, "\(folder)")
+        }
+        let results = await testCleaner(home).clean(report.findings.filter { $0.safety == .safe }.map(\.id)).results
+        #expect(results.allSatisfy { $0.ok }, "\(results)")
+        for kept in [program, unknown, unversioned, home.path(Self.dlxTool)] {
+            #expect(pathExists(kept), "\(kept)")
+        }
+        for folder in safe { #expect(!pathExists(home.path("\(Self.pnpm)/\(folder)")), "\(folder)") }
+    }
+
     @Test func pnpmDlxIsReviewAndItsParentIsNeverRemoved() async throws {
         let home = try makePnpmHome()
         let byPath = try await scanFindings(home)

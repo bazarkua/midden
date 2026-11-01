@@ -61,7 +61,8 @@ import Testing
         Case(path: "Library/Caches/ms-playwright/chromium-1228", title: "Playwright browser ({name})", safety: .review),
         Case(path: "Library/Caches/ms-playwright-mcp", title: "Playwright MCP browser profiles", safety: .review),
         Case(path: "Library/Caches/pnpm/dlx", title: "pnpm dlx packages", safety: .review),
-        Case(path: "Library/Caches/pnpm/metadata-v1.3", title: "pnpm metadata ({name})", safety: .safe),
+        // pnpm metadata needs the folder's facts (CarveOutTests).
+        Case(path: "Library/Caches/pnpm/metadata-v1.3", title: nil, safety: nil),
         Case(path: "Library/Caches/pypoetry/virtualenvs", title: "Poetry virtual environments", safety: .review),
         Case(path: "Library/Caches/pypoetry/artifacts", title: "Poetry downloads ({name})", safety: .safe),
         Case(path: "Library/Caches/org.R-project.R/R/renv", title: "renv package cache", safety: .info),

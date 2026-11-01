@@ -10,7 +10,9 @@ struct Rule: Sendable {
     }
 
     /// Paths relative to the home folder. A `*` component matches any one
-    /// folder name except Apple's own (see `RuleCatalog.isAppleOwned`).
+    /// folder name except Apple's own (see `RuleCatalog.isAppleOwned`); a
+    /// component ending in `*`, such as `metadata*`, matches the names
+    /// that start with the rest.
     var paths: [String]
     var category: Category
     var safety: Safety
@@ -71,6 +73,9 @@ struct Rule: Sendable {
         /// Among the newest of its siblings' versions, or the newest can't
         /// be told (see `DeviceSupportVersions`).
         case newestVersion
+        /// pnpm metadata: directly in the cache, or in a versioned folder
+        /// named v<number>.
+        case pnpmMetadata
         /// An extension version VS Code marked for removal and would delete
         /// itself.
         case obsoleteExtension
@@ -691,18 +696,23 @@ enum RuleCatalog {
             action: .manual("Delete the models you no longer use in Finder.")),
         // pnpm's cacheDir is ~/Library/Caches/pnpm on macOS and holds
         // "package metadata, dlx cache, and some install verification
-        // results" (pnpm.io/settings/other). The dlx folders hold the
-        // packages of commands run with `pnpm dlx`, which can be running.
+        // results" (pnpm.io/settings/other). `pnpm store prune` removes
+        // "the metadata* directories in the cache directory and in its
+        // versioned subdirectories, such as v12/metadata" and keeps the
+        // other caches (pnpm.io/cli/store). Only those metadata folders are
+        // Safe. dlx holds the packages of commands run with `pnpm dlx`,
+        // which can be running. Everything else stays in the container.
         Rule(
             paths: ["Library/Caches/pnpm"],
             category: .packageCaches, safety: .info,
             title: "pnpm cache", group: "pnpm",
             explanation: """
-                pnpm's cache folder: package metadata, and the packages of commands you ran \
-                with `pnpm dlx`. Each is listed separately, so Midden never deletes this folder \
-                as a whole.
+                pnpm's cache folder: package metadata, the packages of commands you ran with \
+                `pnpm dlx`, and other caches pnpm keeps, some of them programs. Metadata and \
+                dlx are listed separately. Midden never deletes this folder as a whole and \
+                leaves the other caches to pnpm.
                 """,
-            action: .manual("Clean the parts listed separately.")),
+            action: .manual("Run `pnpm store prune` to let pnpm remove what it no longer needs.")),
         Rule(
             paths: ["Library/Caches/pnpm/dlx"],
             category: .packageCaches, safety: .review,
@@ -716,14 +726,15 @@ enum RuleCatalog {
             action: .removeDirectory,
             checkInUse: true),
         Rule(
-            paths: ["Library/Caches/pnpm/*"],
+            paths: ["Library/Caches/pnpm/metadata*", "Library/Caches/pnpm/v*/metadata*"],
             category: .packageCaches, safety: .safe,
             title: "pnpm metadata ({name})", group: "pnpm",
             explanation: """
-                Package metadata and install checks pnpm cached. pnpm downloads or redoes them \
-                as needed.
+                Package metadata pnpm cached: what `pnpm store prune` deletes. The next \
+                install downloads it again.
                 """,
-            action: .removeDirectory),
+            action: .removeDirectory,
+            requires: .pnpmMetadata),
         // Poetry's cache-dir is ~/Library/Caches/pypoetry on macOS, and its
         // virtualenvs.path defaults to {cache-dir}/virtualenvs (Poetry's
         // configuration docs). Downloads live in cache/repositories and
@@ -1038,7 +1049,7 @@ enum RuleCatalog {
         return patterns.contains { pattern in
             pattern.components.count > relative.count
                 && zip(pattern.components, relative).allSatisfy { expected, actual in
-                    expected == "*" ? !isAppleOwned(actual) : expected == actual
+                    componentMatches(expected, actual)
                 }
         }
     }
@@ -1055,16 +1066,30 @@ enum RuleCatalog {
             }
             var wildcard: String?
             for (expected, actual) in zip(pattern.components, relative) {
-                if expected == "*" {
-                    if isAppleOwned(actual) { continue patterns }
-                    wildcard = actual
-                } else if expected != actual {
-                    continue patterns
-                }
+                guard componentMatches(expected, actual) else { continue patterns }
+                if expected == "*" { wildcard = actual }
             }
             return RuleMatch(rule: pattern.rule, wildcard: wildcard)
         }
         return nil
+    }
+
+    /// `*` is any folder name but Apple's own, and is what `{wildcard}`
+    /// names. `name*` is any folder name starting with `name`. Anything
+    /// else matches itself.
+    static func componentMatches(_ expected: String, _ actual: String) -> Bool {
+        if expected == "*" { return !isAppleOwned(actual) }
+        if expected.count > 1, expected.hasSuffix("*") { return actual.hasPrefix(expected.dropLast()) }
+        return expected == actual
+    }
+
+    /// `metadata*` in pnpm's cache folder, or in a `v<number>` folder in it.
+    static func isPnpmMetadata(_ folder: DirectoryFacts) -> Bool {
+        guard folder.name.hasPrefix("metadata"), let relative = folder.relative else { return false }
+        if relative.count == 4 { return true }
+        let version = relative[relative.count - 2]
+        return version.count > 1 && version.hasPrefix("v") && version.dropFirst().allSatisfy(\.isASCII)
+            && version.dropFirst().allSatisfy(\.isNumber)
     }
 
     /// Whether the folder shows what a rule requires of it.
@@ -1079,6 +1104,8 @@ enum RuleCatalog {
             folder.parent.markers.isSuperset(of: [.chromiumPreferences, .chromiumNetworkState])
         case .newestVersion:
             folder.parent.newestVersions?.contains(folder.name) ?? true
+        case .pnpmMetadata:
+            Self.isPnpmMetadata(folder)
         case .obsoleteExtension:
             folder.parent.obsoleteExtensions?.contains(folder.name) ?? false
         }
