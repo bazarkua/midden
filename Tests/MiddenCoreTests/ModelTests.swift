@@ -22,6 +22,19 @@ import Testing
     #expect(check.title == "Not locked")
 }
 
+@Test func readsReportsSavedBeforeTheCountsWereSplit() throws {
+    let old = Data("""
+        {"home": "/h", "startedAt": 0, "duration": 1, "itemsScanned": 2, "bytesScanned": 3,
+         "disk": {"total": 10, "free": 5}, "findings": [], "topFolders": [],
+         "unreadableCount": 7, "needsFullDiskAccess": false}
+        """.utf8)
+    let report = try JSONDecoder().decode(ScanReport.self, from: old)
+    #expect(report.unreadableCount == 7)
+    #expect(report.readErrors == 7)
+    #expect(report.skippedWithoutFullDiskAccess == 0)
+    #expect(report.spaceMap == nil)
+}
+
 @Test func manualActionsAreNotAutomatic() {
     #expect(CleanAction.manual("Do it in Finder").isAutomatic == false)
     #expect(CleanAction.removeDirectory.isAutomatic)

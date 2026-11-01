@@ -273,12 +273,19 @@ public struct ScanReport: Codable, Sendable {
     /// Sorted by size, largest first.
     public var findings: [Finding]
     public var topFolders: [FolderUsage]
-    /// Folders the scan couldn't read, usually for lack of Full Disk Access.
+    /// Folders the scan didn't read:
+    /// `skippedWithoutFullDiskAccess + readErrors`.
     public var unreadableCount: Int
     public var needsFullDiskAccess: Bool
     /// The home folder's size tree, root = home. Worktrees outside home
     /// aren't in it.
     public var spaceMap: SpaceNode?
+    /// Privacy-protected folders not opened because Full Disk Access is
+    /// missing. Granting it lets the next scan read them.
+    public var skippedWithoutFullDiskAccess: Int
+    /// Folders that failed to list (permissions, I/O errors), or whose
+    /// listing stopped making progress and was given up.
+    public var readErrors: Int
 
     public init(
         home: String,
@@ -291,7 +298,9 @@ public struct ScanReport: Codable, Sendable {
         topFolders: [FolderUsage],
         unreadableCount: Int,
         needsFullDiskAccess: Bool,
-        spaceMap: SpaceNode? = nil
+        spaceMap: SpaceNode? = nil,
+        skippedWithoutFullDiskAccess: Int = 0,
+        readErrors: Int = 0
     ) {
         self.home = home
         self.startedAt = startedAt
@@ -304,6 +313,27 @@ public struct ScanReport: Codable, Sendable {
         self.unreadableCount = unreadableCount
         self.needsFullDiskAccess = needsFullDiskAccess
         self.spaceMap = spaceMap
+        self.skippedWithoutFullDiskAccess = skippedWithoutFullDiskAccess
+        self.readErrors = readErrors
+    }
+
+    /// Also reads reports saved before the newer fields existed.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        home = try container.decode(String.self, forKey: .home)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        duration = try container.decode(Double.self, forKey: .duration)
+        itemsScanned = try container.decode(Int64.self, forKey: .itemsScanned)
+        bytesScanned = try container.decode(Int64.self, forKey: .bytesScanned)
+        disk = try container.decode(DiskSpace.self, forKey: .disk)
+        findings = try container.decode([Finding].self, forKey: .findings)
+        topFolders = try container.decode([FolderUsage].self, forKey: .topFolders)
+        unreadableCount = try container.decode(Int.self, forKey: .unreadableCount)
+        needsFullDiskAccess = try container.decode(Bool.self, forKey: .needsFullDiskAccess)
+        spaceMap = try container.decodeIfPresent(SpaceNode.self, forKey: .spaceMap)
+        skippedWithoutFullDiskAccess =
+            try container.decodeIfPresent(Int.self, forKey: .skippedWithoutFullDiskAccess) ?? 0
+        readErrors = try container.decodeIfPresent(Int.self, forKey: .readErrors) ?? unreadableCount
     }
 
     /// Bytes Midden could free for a given safety level.

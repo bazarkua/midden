@@ -142,11 +142,17 @@ enum CLI {
         Terminal.print(
             "Disk: \(Format.bytes(report.disk.free)) free of \(Format.bytes(report.disk.total)).")
         if report.needsFullDiskAccess || report.unreadableCount > 0 {
-            var note = "\(report.unreadableCount) folders couldn't be read."
-            if report.needsFullDiskAccess {
-                note += " Give your terminal Full Disk Access (System Settings → Privacy & Security) to see the Trash, Mail and device backups."
+            var notes: [String] = []
+            if report.skippedWithoutFullDiskAccess > 0 {
+                notes.append("Skipped \(report.skippedWithoutFullDiskAccess) protected folders without Full Disk Access.")
             }
-            Terminal.print(Terminal.paint(note, .dim))
+            if report.readErrors > 0 {
+                notes.append("\(report.readErrors) folders couldn't be read.")
+            }
+            if report.needsFullDiskAccess {
+                notes.append("Give your terminal Full Disk Access (System Settings → Privacy & Security) to see the Trash, Mail and device backups.")
+            }
+            Terminal.print(Terminal.paint(notes.joined(separator: " "), .dim))
         }
 
         for category in Category.allCases {

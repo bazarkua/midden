@@ -106,8 +106,11 @@ struct WalkResult<Mark: Sendable> {
     var totalBytes: Int64
     /// Entries listed: files, folders, symlinks.
     var items: Int64
-    /// Directories that couldn't be listed (permissions, I/O errors).
-    var unreadable: Int
+    /// Directories that failed to list (permissions, I/O errors, given up).
+    var readErrors: Int
+    /// Directories not entered because the delegate said they're unreadable.
+    var skipped: Int
+    var unreadable: Int { readErrors + skipped }
     /// Why the root itself couldn't be listed; nil when it could.
     var rootError: POSIXError?
     /// Folders whose listing stopped making progress and was given up.
@@ -160,6 +163,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     private let items = Atomic<Int64>(0)
     private let bytesSeen = Atomic<Int64>(0)
     private let unreadable = Atomic<Int>(0)
+    private let skipped = Atomic<Int>(0)
     private let rootError = Atomic<Int32>(0)
     private let lastProgress = Atomic<UInt64>(0)
 
@@ -201,7 +205,8 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         return WalkResult(
             totalBytes: rootTotal.load(ordering: .acquiring),
             items: items.load(ordering: .relaxed),
-            unreadable: unreadable.load(ordering: .relaxed),
+            readErrors: unreadable.load(ordering: .relaxed),
+            skipped: skipped.load(ordering: .relaxed),
             rootError: rootError.load(ordering: .relaxed) == 0
                 ? nil : POSIXError(rootError.load(ordering: .relaxed)),
             stalled: stalled.withLock { $0 },
@@ -346,7 +351,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
                     continue
                 }
                 if visit.unreadable.contains(entry.name) {
-                    unreadable.add(1, ordering: .relaxed)
+                    skipped.add(1, ordering: .relaxed)
                     continue
                 }
                 children.append(Node(

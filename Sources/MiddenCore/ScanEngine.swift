@@ -153,7 +153,9 @@ struct ScanEngine {
             unreadableCount: walk.unreadable,
             needsFullDiskAccess: !fullDiskAccess,
             spaceMap: SpaceMap.build(
-                walk.spaceRecords, root: home, findings: findings, floor: WalkDefaults.mapFloor))
+                walk.spaceRecords, root: home, findings: findings, floor: WalkDefaults.mapFloor),
+            skippedWithoutFullDiskAccess: walk.skipped,
+            readErrors: walk.readErrors)
     }
 }
 

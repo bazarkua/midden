@@ -37,24 +37,47 @@ import Testing
         try home.write("Library/Containers/com.apple.mail/Data/x", bytes: 100_000)
         try home.write("Library/Containers/com.docker.docker/Data/vm.raw", bytes: 400_000)
         try home.write("Work/notes.txt", bytes: 50_000)
+        try home.write("Work/locked/secret.txt", bytes: 1_000)
+        chmod(home.path("Work/locked"), 0o000)
+        defer { chmod(home.path("Work/locked"), 0o755) }
 
         var options = ScanOptions(home: home.url, minimumBytes: 1)
         options.fullDiskAccess = false
         let without = try await Scanner(options: options).scan()
         #expect(without.needsFullDiskAccess)
-        #expect(without.unreadableCount == 3)
+        #expect(without.skippedWithoutFullDiskAccess == 3)
+        #expect(without.readErrors == 1)
+        #expect(without.unreadableCount == 4)
         let skipped = try ["Library/Mail", "Library/Group Containers/group.com.apple.notes",
                            "Library/Containers/com.apple.mail"].reduce(Int64(0)) { sum, folder in
             let du = try sh(["du", "-sk", home.path(folder)])
             return sum + Int64(du.split(separator: "\t").first ?? "0")! * 1024
         }
-        let total = Int64(try sh(["du", "-sk", home.path]).split(separator: "\t").first ?? "0")! * 1024
+        // du can't read the locked folder either, so it counts the same.
+        let total = Int64(((try? sh(["du", "-sk", home.path])) ?? duIgnoringErrors(home.path))
+            .split(separator: "\t").first ?? "0")! * 1024
         #expect(without.bytesScanned == total - skipped)
 
         options.fullDiskAccess = true
         let with = try await Scanner(options: options).scan()
         #expect(!with.needsFullDiskAccess)
-        #expect(with.unreadableCount == 0)
+        #expect(with.skippedWithoutFullDiskAccess == 0)
+        #expect(with.readErrors == 1)
+        #expect(with.unreadableCount == 1)
         #expect(with.bytesScanned == total)
     }
+}
+
+/// `du -sk` output even when du exits 1 because a folder can't be read.
+private func duIgnoringErrors(_ path: String) -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
+    process.arguments = ["-sk", path]
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = Pipe()
+    try? process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return String(decoding: data, as: UTF8.self)
 }
