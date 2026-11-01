@@ -1,6 +1,39 @@
 import Foundation
 @testable import MiddenCore
 
+/// Every git command the tests cause, directly or through Midden, ignores
+/// the machine's git configuration. A developer's or CI runner's global
+/// config can change what git does: with core.fsmonitor=true, for one, a
+/// commit in a worktree starts a file-watcher daemon that keeps running, and
+/// Midden would see the worktree as in use. Variables that point git at
+/// another repository are removed too.
+enum Hermetic {
+    static let gitEnvironment: [String: String?] = [
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": nil,
+        "GIT_CONFIG_PARAMETERS": nil,
+        "GIT_CONFIG_COUNT": nil,
+        "GIT_DIR": nil,
+        "GIT_WORK_TREE": nil,
+        "GIT_INDEX_FILE": nil,
+        "GIT_OBJECT_DIRECTORY": nil,
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": nil,
+        "GIT_COMMON_DIR": nil,
+        "GIT_NAMESPACE": nil,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    ]
+
+    /// Makes Midden's own commands hermetic too. Runs once.
+    static let applied: Void = {
+        Command.environmentOverrides.withLock { $0.merge(gitEnvironment) { _, new in new } }
+    }()
+}
+
 /// A temporary directory with a canonical path (on macOS /var is a symlink
 /// to /private/var, and the scanner and cleaner work on resolved paths).
 /// Deleted when the value is released.
@@ -8,6 +41,7 @@ final class TempDir {
     let path: String
 
     init(_ label: String = "midden") throws {
+        Hermetic.applied
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(label)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -64,13 +98,11 @@ func sh(_ arguments: [String], in directory: String? = nil) throws -> String {
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = arguments
     if let directory { process.currentDirectoryURL = URL(fileURLWithPath: directory) }
+    Hermetic.applied
     var environment = ProcessInfo.processInfo.environment
-    environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
-    environment["GIT_CONFIG_SYSTEM"] = "/dev/null"
-    environment["GIT_AUTHOR_NAME"] = "Test"
-    environment["GIT_AUTHOR_EMAIL"] = "test@example.com"
-    environment["GIT_COMMITTER_NAME"] = "Test"
-    environment["GIT_COMMITTER_EMAIL"] = "test@example.com"
+    for (name, value) in Hermetic.gitEnvironment {
+        environment[name] = value
+    }
     process.environment = environment
     let output = Pipe()
     process.standardOutput = output

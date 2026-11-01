@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 struct CommandResult: Sendable {
     /// Exit status; -1 if it couldn't start or was killed.
@@ -23,6 +24,11 @@ enum Sandbox {
 /// Runs command-line tools synchronously, capturing stdout and stderr.
 /// Call it from a thread that may block, never from the cooperative pool.
 enum Command {
+    /// Applied to the environment of every command: a value sets a
+    /// variable, nil removes it. Empty in the app; tests use it to keep the
+    /// machine's git configuration away from the git commands they cause.
+    static let environmentOverrides = Mutex<[String: String?]>([:])
+
     /// Searched after PATH. Apps opened from Finder get a minimal PATH
     /// without Homebrew's folders.
     static let extraSearchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
@@ -119,6 +125,9 @@ enum Command {
 
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = searchPath.joined(separator: ":")
+        for (name, value) in environmentOverrides.withLock({ $0 }) {
+            environment[name] = value
+        }
         environment.merge(extra) { _, new in new }
         let argv = ([executable] + arguments.dropFirst()).map { strdup($0) } + [nil]
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
