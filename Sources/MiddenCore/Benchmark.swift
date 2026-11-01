@@ -45,16 +45,26 @@ package enum Benchmark {
         case .walk:
             let path = try System.canonicalPath(root)
             let walk = try Walker(root: path, delegate: SizeOnly(), threadCount: threadCount).run()
+            // Partial totals would time less work than the other tools did.
+            if let rootError = walk.rootError { throw rootError }
             return outcome(items: walk.items, bytes: walk.totalBytes, readErrors: walk.readErrors)
         case .classify, .read:
             let path = try System.canonicalPath(root)
-            // As ScanEngine decides it.
-            let fullDiskAccess = FullDiskAccess.isGranted(home: URL(fileURLWithPath: path))
+            // As ScanEngine sets it up: Full Disk Access is probed on the
+            // account's real home, and protected folders are recognized by
+            // where they are in it.
+            let accountHome = System.accountHome()
+            let fullDiskAccess = FullDiskAccess.isGranted(home: URL(fileURLWithPath: accountHome))
+            if !fullDiskAccess, PrivacyProtected.covers(path, accountHome: accountHome) {
+                throw POSIXError(.EPERM)
+            }
             let walk = try Walker(
-                root: path, delegate: ScanDelegate(skipProtected: !fullDiskAccess),
+                root: path,
+                delegate: ScanDelegate(skipProtected: !fullDiskAccess, accountHome: accountHome),
                 threadCount: threadCount,
                 mapFloor: stage == .read ? WalkDefaults.mapFloor : nil
             ).run()
+            if let rootError = walk.rootError { throw rootError }
             return outcome(items: walk.items, bytes: walk.totalBytes, readErrors: walk.readErrors)
         case .scan:
             var options = ScanOptions(home: URL(fileURLWithPath: root))
