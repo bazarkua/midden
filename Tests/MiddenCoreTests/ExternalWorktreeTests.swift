@@ -131,6 +131,23 @@ private func exists(_ path: String) -> Bool {
         #expect(claude.evidence.contains("/private/tmp/claude-501"))
     }
 
+    @Test func findsCodexWorktreesNextToItsHistory() async throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home, "Work/app")
+        let worktree = home.path(".codex/worktrees/3f2a/app")
+        try sh(["git", "-C", repository, "worktree", "add", "-q", "-b", "codex/task", worktree])
+        try home.write(".codex/worktrees/3f2a/app/node_modules/dep/index.js", bytes: 2_000_000)
+        try home.write(".codex/sessions/2026/10/31/rollout.jsonl", bytes: 1_500_000)
+
+        let report = try await scan(home)
+        let found = try #require(report.findings.first { $0.path == worktree })
+        #expect(found.title == "Codex worktree app (codex/task)")
+        #expect(found.group == "app")
+        let history = try #require(report.findings.first { $0.path == home.path(".codex/sessions") })
+        #expect(history.category == .personal)
+        #expect(!history.action.isAutomatic)
+    }
+
     @Test func titlesAClaudeCodeWorktree() async throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home, "repo")

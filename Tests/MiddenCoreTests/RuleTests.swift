@@ -35,6 +35,19 @@ import Testing
         Case(path: ".Trash", title: "Trash", safety: .review),
         Case(path: "Downloads", title: "Downloads", safety: .info),
         Case(path: ".ollama/models", title: "Ollama models", safety: .info),
+        // AI coding tools: history is the user's, programs are the tools'.
+        Case(path: ".claude/projects", title: "Claude Code conversations", safety: .info),
+        Case(path: ".codex/sessions", title: "Codex conversations", safety: .info),
+        Case(path: ".gemini/antigravity", title: "Antigravity conversations", safety: .info),
+        Case(path: "Library/Application Support/Claude/vm_bundles", title: "Claude app virtual machine", safety: .info),
+        Case(path: "Library/Application Support/Cursor/snapshots", title: "Cursor snapshots", safety: .info),
+        Case(path: ".local/share/claude/versions", title: "Claude Code versions", safety: .info),
+        Case(path: "Library/Application Support/Claude/Cache", title: "{app} web cache ({name})",
+             safety: .safe, wildcard: "Claude"),
+        // Worktrees in these folders are found one by one; a rule would hide them.
+        Case(path: ".codex/worktrees", title: nil, safety: nil),
+        Case(path: ".cursor/worktrees", title: nil, safety: nil),
+        Case(path: ".claude", title: nil, safety: nil),
         // Apple's own folders are left alone.
         Case(path: "Library/Caches/com.apple.Safari", title: nil, safety: nil),
         Case(path: "Library/Caches/CloudKit", title: nil, safety: nil),

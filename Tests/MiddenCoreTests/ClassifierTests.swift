@@ -77,7 +77,9 @@ extension Reclassification {
         for file in testCase.files { try home.write(file, bytes: 10) }
         let result = try reclassify(home, testCase.folder)
         #expect(result.buildFolder == testCase.expected)
-        if testCase.expected == nil { #expect(result.isNothing) }
+        // Not reported on its own: either unmatched or inside another finding
+        // (~/.vscode/extensions is an info rule).
+        if testCase.expected == nil { #expect(result.isNothing || result.insideAncestor != nil) }
     }
 
     @Test func nestedBuildFoldersBelongToTheOuterOne() throws {
