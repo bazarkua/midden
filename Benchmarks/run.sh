@@ -13,10 +13,13 @@
 # once, in an order shuffled from --seed, so neither machine load nor a
 # tool's place in the order favors one tool.
 #
-# A run is valid for comparing speed only when the tool exited 0, read
-# every folder, reported its totals, and its totals equal those of the
-# reference tool in the same round (the C scanner, else Midden's walker).
-# Medians use valid runs only. Every run is kept in results.csv with its
+# Benchmarks/validate.awk decides which runs count. A run is valid for
+# comparing speed only when every required field was recorded, the tool
+# exited 0, read every folder, and its totals equal those of the reference
+# run in the same round (the C scanner, else Midden's walker). Missing
+# evidence never passes. A run with nothing to compare against in its round
+# is kept as "unverified", a standalone timing. Medians and the paired
+# ratios use valid runs only; every run is kept in results.csv with its
 # reason when it isn't valid.
 #
 # Usage: Benchmarks/run.sh [options] DIR...
@@ -65,8 +68,10 @@
 #                records: enumeration only, which is less work
 #
 # Writes results.md (per tool: valid/attempted runs, medians and spread of
-# the valid runs, every run, invalid runs with reasons; totals; machine
-# conditions), check.md (the fixture check), conditions.md (the command
+# the valid runs, every run, left-out runs with reasons; paired ratios from
+# rounds where both runs were valid; totals; finding counts and JSON sizes
+# for the report-building tools; machine conditions), check.md (the
+# fixture check), conditions.md (the command
 # line, the commits measured, the machine, power and load at the start),
 # results.csv (every run, with valid and reason) and raw/ (each tool's
 # output, errors and rusage).
@@ -404,6 +409,8 @@ check_fixture() {
     local base clean locked expected expected_locked reference status counted
     local items bytes errors verdict failures=0
     base=$(mktemp -d "${TMPDIR:-/tmp}/midden-fixture.XXXXXX") || die "can't make the fixture folder"
+    # Resolved, as the measured folders are: $TMPDIR is behind a symlink.
+    base=$(cd "$base" && pwd -P) || die "can't resolve the fixture folder"
     clean="$base/clean"
     locked="$base/locked"
     expected=$("$here/fixture.sh" "$clean") || die "can't build the fixture"
@@ -460,32 +467,57 @@ else
     printf '## Fixture check\n\nSkipped with --skip-check.\n\n' >"$out/check.md"
 fi
 
+
 # MARK: Measuring
 
-echo "dataset,tool,run,position,wall_s,user_s,sys_s,max_rss_bytes,peak_footprint_bytes,instructions,cycles,items,bytes,errors,load1,status" >"$runs_csv"
+echo "dataset,tool,run,position,wall_s,user_s,sys_s,max_rss_bytes,peak_footprint_bytes,instructions,cycles,items,bytes,errors,load1,status,findings,json_bytes" >"$runs_csv"
 
-# Records one run of `tool` as round $3, position $4.
+# Prints "findings json_bytes" for the tools that build a report; "-" for
+# the others and for what a tool doesn't say.
+report_fields() {
+    local tool=$1 file=$2
+    case $tool in
+        scan)
+            if [ -s "$file" ]; then
+                echo "$(plutil -extract findings raw -o - "$file" 2>/dev/null || echo -)" \
+                    "$(wc -c <"$file" | tr -d ' ')"
+            else
+                echo "- -"
+            fi ;;
+        engine|engine-json)
+            tr ' ' '\n' <"$file" | awk -F= '$1 == "findings" { f = $2 } $1 == "json_bytes" { b = $2 }
+                END { print (f == "" ? "-" : f), (b == "" ? "-" : b) }' ;;
+        *) echo "- -" ;;
+    esac
+}
+
+# Records one run of `tool` on `root` as round $3, position $4.
 measure() {
-    local tool=$1 dir=$2 run=$3 position=$4 prefix stdout status counted fields load
+    local tool=$1 root=$2 run=$3 position=$4 prefix stdout status counted fields load line
     prefix="$out/raw/$tag-$tool.run$run"
     stdout="$prefix.out"
     [ "$tool" = scan ] && stdout="$prefix.json"
     load=$(load1)
     if [ $cold -eq 1 ] && [ "$run" -gt 0 ]; then
         if ! sudo purge; then
-            echo "$key,$tool,$run,$position,-,-,-,-,-,-,-,-,-,-,$load,purge-failed" >>"$runs_csv"
+            echo "$key,$tool,$run,$position,-,-,-,-,-,-,-,-,-,-,$load,purge-failed,-,-" >>"$runs_csv"
             echo "  run $run/$runs $tool: purge failed, not run" >&2
             return
         fi
     fi
-    run_tool "$tool" "$dir" "$stdout" "$prefix.time" 2>"$prefix.err"
+    run_tool "$tool" "$root" "$stdout" "$prefix.time" 2>"$prefix.err"
     status=$?
     counted=$(totals "$tool" "$stdout" "$prefix.err")
     fields=$(rusage_fields "$prefix.time")
-    echo "$key,$tool,$run,$position,$(echo "$fields" | tr ' ' ','),$(echo "$counted" | tr ' ' ','),$load,$status" \
-        | tr -d '\r' >>"$runs_csv"
+    line="$key,$tool,$run,$position,$(echo "$fields" | tr ' ' ','),$(echo "$counted" | tr ' ' ',')"
+    line="$line,$load,$status,$(report_fields "$tool" "$stdout" | tr ' ' ',')"
+    echo "$line" | tr -d '\r' >>"$runs_csv"
     echo "  run $run/$runs $tool: $(echo "$fields" | awk '{ print $1 }') s, exit $status (load $load)" >&2
 }
+
+# Comparisons reported as ratios of wall time, from the rounds where both
+# runs were valid. The last two compare different work.
+pairs="walk:c walk-1:c-1 c-openat:c c-readdir:c c-readdir-1:c-1 classify:walk read:walk engine:read engine-json:engine scan:engine-json du:walk find:walk"
 
 {
     echo "# Midden benchmark"
@@ -509,10 +541,12 @@ for dir in "${dirs[@]}"; do
     started=$(date '+%H:%M')
     schedule=
 
+    # Every tool gets the resolved folder, so a symlink on the way to it
+    # can't make tools see different trees.
     if [ $cold -eq 0 ]; then
         position=1
         for tool in "${tool_list[@]}"; do
-            measure "$tool" "$dir" 0 $position
+            measure "$tool" "$root" 0 $position
             position=$((position + 1))
         done
     fi
@@ -525,54 +559,20 @@ for dir in "${dirs[@]}"; do
         position=1
         for tool in "${order[@]}"; do
             wait_for_load
-            measure "$tool" "$dir" $run $position
+            measure "$tool" "$root" $run $position
             position=$((position + 1))
         done
         run=$((run + 1))
     done
     load_end=$(uptime | sed 's/.*load averages*: //')
 
-    # MARK: Validity
-
-    # A run is valid for comparing speed when it exited 0, read everything,
-    # reported totals, and matches the round's reference tool.
-    awk -F, -v OFS=, -v refs="$reference_tools" '
-        NR == 1 { print $0, "valid", "reason"; next }
-        {
-            n++
-            for (i = 1; i <= NF; i++) f[n, i] = $i
-            dataset = $1; tool = $2; run = $3; items = $12; bytes = $13; errors = $14; status = $16
-            reason = ""
-            if (run == 0) reason = "warm-up run: first touch in this session"
-            else if (status == "purge-failed") reason = "purge failed"
-            else {
-                if (status != 0) reason = "exit status " status
-                if (errors != "-" && errors > 0) reason = reason (reason == "" ? "" : " and ") "read errors: " errors
-                if (items == "-" && bytes == "-") reason = reason (reason == "" ? "" : " and ") "no totals"
-            }
-            why[n] = reason
-        }
-        END {
-            count = split(refs, preferred, " ")
-            for (p = 1; p <= count; p++)
-                for (r = 1; r <= n; r++)
-                    if (f[r, 2] == preferred[p] && why[r] == "" && !((f[r, 1], f[r, 3]) in ref))
-                        ref[f[r, 1], f[r, 3]] = r
-            for (r = 1; r <= n; r++) {
-                if (why[r] == "" && ((f[r, 1], f[r, 3]) in ref)) {
-                    q = ref[f[r, 1], f[r, 3]]
-                    if ((f[r, 12] != "-" && f[q, 12] != "-" && f[r, 12] != f[q, 12]) \
-                        || (f[r, 13] != "-" && f[q, 13] != "-" && f[r, 13] != f[q, 13]))
-                        why[r] = "totals differ from " f[q, 2] " in round " f[r, 3]
-                }
-                line = f[r, 1]
-                for (i = 2; i <= 16; i++) line = line OFS f[r, i]
-                print line, (why[r] == "" ? "yes" : "no"), why[r]
-            }
-        }' "$runs_csv" >"$csv"
+    awk -v refs="$reference_tools" -f "$here/validate.awk" "$runs_csv" >"$csv" \
+        || die "can't validate the runs"
 
     # MARK: Report for this folder
 
+    # Columns of results.csv: 5 wall, 6 user, 7 sys, 8 RSS, 12 items,
+    # 13 bytes, 14 errors, 17 findings, 18 JSON bytes, 19 valid, 20 reason.
     {
         echo
         echo "## $name"
@@ -580,7 +580,7 @@ for dir in "${dirs[@]}"; do
         echo "File system: $(filesystem "$root"). Measured from $started to $(date '+%H:%M')."
         echo "Load average (1, 5, 15 min): $load_start at the start, $load_end at the end."
         echo
-        echo "| Tool | Valid / attempted | Wall, median | Wall, min–max | User CPU | System CPU | Peak RSS | Items/s, own count | Valid runs, in order (s) |"
+        echo "| Tool | Valid / attempted | Wall, median | Wall, min–max | User CPU | System CPU | Peak RSS | Items/s, median per run | Valid runs, in order (s) |"
         echo "|---|:-:|---:|---:|---:|---:|---:|---:|---|"
         for tool in "${tool_list[@]}"; do
             awk -F, -v name="$key" -v tool="$tool" '
@@ -592,8 +592,9 @@ for dir in "${dirs[@]}"; do
                 }
                 $1 == name && $2 == tool && $3 > 0 {
                     tried++
-                    if ($17 != "yes") next
-                    n++; wall[n] = $5; user[n] = $6; sys[n] = $7; rss[n] = $8; items = $12
+                    if ($19 != "yes") next
+                    n++; wall[n] = $5; user[n] = $6; sys[n] = $7; rss[n] = $8
+                    if ($12 ~ /^[0-9]+$/ && $5 > 0) rate[++rated] = $12 / $5
                     every = every (n > 1 ? ", " : "") $5
                     if (n == 1 || $5 < low) low = $5
                     if (n == 1 || $5 > high) high = $5
@@ -601,26 +602,68 @@ for dir in "${dirs[@]}"; do
                 END {
                     if (tried == 0) exit
                     if (n == 0) { printf "| %s | 0 / %d | | | | | | | |\n", tool, tried; exit }
-                    w = median(wall, n)
                     printf "| %s | %d / %d | %.2f s | %.2f–%.2f s | %.2f s | %.2f s | %.0f MB | %s | %s |\n",
-                        tool, n, tried, w, low, high, median(user, n), median(sys, n), median(rss, n) / 1e6,
-                        (items != "-" && w > 0) ? sprintf("%.0fk", items / w / 1000) : "n/a", every
+                        tool, n, tried, median(wall, n), low, high, median(user, n), median(sys, n),
+                        median(rss, n) / 1e6, rated ? sprintf("%.0fk", median(rate, rated) / 1000) : "n/a", every
                 }' "$csv"
         done
         echo
-        echo "Medians and ranges use valid runs only. Items/s divides each tool's own item count by" \
-            "its median wall time; du reports no item count, and find does less work (no sizes)."
+        echo "Medians and ranges use valid runs only. Items/s is each valid run's own item count" \
+            "divided by its wall time, then the median; du reports no item count, and find does" \
+            "less work (no sizes)."
+        complete=$(awk -F, -v name="$key" -v tools="${#tool_list[@]}" '
+            $1 == name && $3 > 0 { if ($19 == "yes") good[$3]++; rounds[$3] = 1 }
+            END { for (r in rounds) { total++; if (good[r] == tools) whole++ }
+                printf "%d of %d", whole, total }' "$csv")
+        echo
+        echo "Rounds in which every tool's run was valid: $complete."
+        echo
+        echo "### Paired comparisons"
+        echo
+        echo "Wall time of the first tool divided by the second's, in each round where both runs" \
+            "were valid; the median and range of those ratios, and how many rounds they come from."
+        echo
+        echo "| Comparison | Ratio, median | Ratio, min–max | Rounds used |"
+        echo "|---|---:|---:|:-:|"
+        for pair in $pairs; do
+            first=${pair%%:*}
+            second=${pair#*:}
+            case " ${tool_list[*]} " in *" $first "*) ;; *) continue ;; esac
+            case " ${tool_list[*]} " in *" $second "*) ;; *) continue ;; esac
+            note=
+            case $first in du|find) note=" (different work)" ;; esac
+            awk -F, -v name="$key" -v a="$first" -v b="$second" -v note="$note" -v runs="$runs" '
+                function median(values, n,    i, j, t) {
+                    for (i = 2; i <= n; i++) for (j = i; j > 1 && values[j - 1] > values[j]; j--) {
+                        t = values[j]; values[j] = values[j - 1]; values[j - 1] = t
+                    }
+                    return n % 2 ? values[(n + 1) / 2] : (values[n / 2] + values[n / 2 + 1]) / 2
+                }
+                $1 == name && $3 > 0 && $19 == "yes" && $2 == a { wa[$3] = $5 }
+                $1 == name && $3 > 0 && $19 == "yes" && $2 == b { wb[$3] = $5 }
+                END {
+                    for (r in wa) if ((r in wb) && wb[r] > 0) {
+                        ratio[++n] = wa[r] / wb[r]
+                        if (n == 1 || ratio[n] < low) low = ratio[n]
+                        if (n == 1 || ratio[n] > high) high = ratio[n]
+                    }
+                    if (n == 0) printf "| %s ÷ %s%s | | | 0 of %d |\n", a, b, note, runs
+                    else printf "| %s ÷ %s%s | %.3f | %.3f–%.3f | %d of %d |\n", a, b, note,
+                        median(ratio, n), low, high, n, runs
+                }' "$csv"
+        done
         echo
         echo "Order of each round (seed $seed):"
         echo
         printf '%s' "$schedule"
-        invalid=$(awk -F, -v name="$key" '$1 == name && $3 > 0 && $17 == "no" {
-                printf "- %s, round %s: %s\n", $2, $3, $18 }' "$csv")
-        if [ -n "$invalid" ]; then
+        left_out=$(awk -F, -v name="$key" '$1 == name && $3 > 0 && $19 != "yes" {
+                printf "- %s, round %s (%s s): %s\n", $2, $3, $5, $20 }' "$csv")
+        if [ -n "$left_out" ]; then
             echo
-            echo "Invalid runs, left out of the medians:"
+            echo "Runs left out of the medians and ratios, with the reason. An unverified run is a" \
+                "standalone timing: nothing in its round had the totals to compare it with."
             echo
-            echo "$invalid"
+            echo "$left_out"
         fi
         echo
         echo "### Totals"
@@ -630,9 +673,8 @@ for dir in "${dirs[@]}"; do
         for tool in "${tool_list[@]}"; do
             awk -F, -v name="$key" -v tool="$tool" '
                 $1 == name && $2 == tool && $3 > 0 {
-                    if ($14 != "-" && $14 + 0 > most) most = $14 + 0
-                    if ($14 != "-") reported = 1
-                    if ($17 != "yes") next
+                    if ($14 ~ /^[0-9]+$/) { reported = 1; if ($14 + 0 > most) most = $14 + 0 }
+                    if ($19 != "yes") next
                     if (!(seen++)) { items = $12; bytes = $13 }
                     if ($12 != items || $13 != bytes) varies = 1
                 }
@@ -655,10 +697,36 @@ for dir in "${dirs[@]}"; do
                 END { if (limit != "") printf "Descriptors, %s: limit %s. Most directory descriptors open at once: %d.\n",
                     tool, limit, most }'
         done
-        json=$(cat "$out/raw/$tag-engine-json".run[1-9]*.out 2>/dev/null | tr ' ' '\n' | awk -F= '
-            $1 == "json_seconds" { s[++n] = $2 } $1 == "json_bytes" { b = $2 }
-            END { if (n) printf "%s s for %.1f MB (in-process, first measured run)", s[1], b / 1e6 }')
-        [ -n "$json" ] && echo "JSON encoding inside engine-json: $json."
+        case " ${tool_list[*]} " in
+            *" scan "*|*" engine "*|*" engine-json "*)
+                echo
+                echo "### Reports"
+                echo
+                echo "These runs measure an engine with known report variability: a file with several" \
+                    "hard links is counted where a walker thread meets it first, so the sizes of" \
+                    "findings that share files (pnpm's node_modules and its store) can change from" \
+                    "run to run, and with them which findings pass the size threshold."
+                echo
+                for tool in scan engine engine-json; do
+                    case " ${tool_list[*]} " in *" $tool "*) ;; *) continue ;; esac
+                    awk -F, -v name="$key" -v tool="$tool" '
+                        $1 == name && $2 == tool && $3 > 0 && $19 == "yes" {
+                            findings = findings (n++ ? ", " : "") $17
+                            if ($18 != "-") sizes = sizes (m++ ? ", " : "") $18
+                        }
+                        END { if (n) printf "- %s, findings per valid run: %s%s\n", tool, findings,
+                            m ? "; JSON bytes: " sizes : "" }' "$csv"
+                done
+                ;;
+        esac
+        # Encoding time and size from the same run: the first valid one.
+        first=$(awk -F, -v name="$key" '$1 == name && $2 == "engine-json" && $3 > 0 && $19 == "yes" {
+            print $3; exit }' "$csv")
+        if [ -n "$first" ]; then
+            tr ' ' '\n' <"$out/raw/$tag-engine-json.run$first.out" | awk -F= -v run="$first" '
+                $1 == "json_seconds" { s = $2 } $1 == "json_bytes" { b = $2 }
+                END { if (s != "") printf "\nJSON encoding inside engine-json, round %s: %s s for %d bytes.\n", run, s, b }'
+        fi
     } >>"$md"
 done
 
