@@ -646,6 +646,15 @@ for dir in "${dirs[@]}"; do
         echo "Item counts exclude the root folder (find counts it, so its count is reduced by one)." \
             "du -k prints 1024-byte units. Errors are folders a tool couldn't fully read: its own" \
             "count, the report's readErrors for midden scan, or stderr lines for du and find."
+        # The C scanner's descriptor limit and the most directory
+        # descriptors it held at once, over its measured runs.
+        for tool in "${tool_list[@]}"; do
+            case $tool in c|c-*) ;; *) continue ;; esac
+            cat "$out/raw/$tag-$tool".run[1-9]*.out 2>/dev/null | tr ' ' '\n' | awk -F= -v tool="$tool" '
+                $1 == "fd_limit" { limit = $2 } $1 == "fd_high_water" && $2 + 0 > most { most = $2 + 0 }
+                END { if (limit != "") printf "Descriptors, %s: limit %s. Most directory descriptors open at once: %d.\n",
+                    tool, limit, most }'
+        done
         json=$(cat "$out/raw/$tag-engine-json".run[1-9]*.out 2>/dev/null | tr ' ' '\n' | awk -F= '
             $1 == "json_seconds" { s[++n] = $2 } $1 == "json_bytes" { b = $2 }
             END { if (n) printf "%s s for %.1f MB (in-process, first measured run)", s[1], b / 1e6 }')
