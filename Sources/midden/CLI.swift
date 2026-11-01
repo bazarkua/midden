@@ -178,9 +178,15 @@ enum CLI {
         Terminal.print()
         let safe = report.findings.filter { $0.safety == .safe && $0.action.isAutomatic }
         let review = report.findings.filter { $0.safety == .review && $0.action.isAutomatic }
-        Terminal.print(
-            "\(Terminal.paint("Safe to clean:", .green)) \(Format.bytes(report.reclaimable(.safe))) in \(Format.items(safe.count)). "
-                + "\(Terminal.paint("Worth a look:", .yellow)) \(Format.bytes(report.reclaimable(.review))) in \(Format.items(review.count)).")
+        // Only name the groups that have something in them.
+        var summary: [String] = []
+        if !safe.isEmpty {
+            summary.append("\(Terminal.paint("Safe to clean:", .green)) \(Format.bytes(report.reclaimable(.safe))) in \(Format.items(safe.count)).")
+        }
+        if !review.isEmpty {
+            summary.append("\(Terminal.paint("Worth a look:", .yellow)) \(Format.bytes(report.reclaimable(.review))) in \(Format.items(review.count)).")
+        }
+        Terminal.print(summary.isEmpty ? "Nothing to clean." : summary.joined(separator: " "))
         if !safe.isEmpty {
             Terminal.print("Clean an item with `midden clean <path>`; Midden checks it again before deleting.")
         }
