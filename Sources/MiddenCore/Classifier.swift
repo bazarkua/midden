@@ -188,9 +188,12 @@ enum Classifier {
         return String(decoding: buffer[..<count], as: UTF8.self)
     }
 
-    /// Opens a regular file for reading, or returns nil. Never follows a
-    /// symlink and never blocks: the file can be swapped for a FIFO after
-    /// it was listed, and open() of a FIFO waits for a writer forever.
+    /// Opens a regular file for reading, or returns nil. Doesn't follow a
+    /// symlink at the last component (O_NOFOLLOW; ones above it are
+    /// followed), and doesn't wait on a FIFO or device: the file can be
+    /// swapped for a FIFO after it was listed, and open() of a FIFO waits
+    /// for a writer forever. Reading a regular file can still block, on
+    /// slow or hung storage.
     static func openRegularFile(_ path: String) -> Int32? {
         var fd: Int32
         repeat {

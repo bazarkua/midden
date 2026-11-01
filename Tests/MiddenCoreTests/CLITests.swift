@@ -3,9 +3,9 @@ import Testing
 @testable import MiddenCore
 
 /// The `midden` command-line tool built from these sources, when it's at
-/// least as new as every source file. `swift test` doesn't build it, so the
-/// tests below run only after `swift build`, and skip otherwise rather than
-/// test an old binary.
+/// least as new as every source file. `swift test` rebuilt it in the runs
+/// this was written with; if a build left it older than the sources, the
+/// tests below are skipped rather than run against an old binary.
 private enum BuiltCLI {
     static let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path

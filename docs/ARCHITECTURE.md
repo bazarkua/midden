@@ -188,7 +188,7 @@ There are no third-party dependencies, including for argument parsing.
 
 ## Testing
 
-`swift test` runs 147 tests against real file systems in temp folders; two slow stress tests (a 5,000-level chain, a folder of 200,000 entries) run only with `MIDDEN_STRESS=1`. Every git command in the tests runs with the machine's git configuration switched off and git's automatic background maintenance disabled. Without that, a `git commit` in a test sometimes left `git maintenance` running in the worktree for a few milliseconds, and the cleaner correctly refused to remove a worktree a program was working in. A probe measured it: 12 of 80 commits left such a process behind with maintenance on, 0 of 80 with it off.
+`swift test` runs 174 tests against real file systems in temp folders. Two of them, slow stress tests (a 5,000-level chain, a folder of 200,000 entries), run only with `MIDDEN_STRESS=1`; the CLI test is skipped if the built `midden` binary is older than the sources. All the others pass, and eight cleaner race cases among them pass by recording known issues (see Known limits): they turn into failures once those races are closed. Every git command in the tests runs with the machine's git configuration switched off and git's automatic background maintenance disabled. Without that, a `git commit` in a test sometimes left `git maintenance` running in the worktree for a few milliseconds, and the cleaner correctly refused to remove a worktree a program was working in. A probe measured it: 12 of 80 commits left such a process behind with maintenance on, 0 of 80 with it off.
 
 The tests cover:
 
@@ -216,6 +216,7 @@ The tests cover:
   The remaining tested cases pass at every stage they're run at: a target or child swapped for a symlink, a file turned into a hard link, new work in a worktree.
 
   The fix for files Midden deletes itself is a delete through descriptors instead of paths. Open each component from home with `openat(O_NOFOLLOW | O_DIRECTORY)`, check device and inode with `fstat` against what validation recorded, and delete with `unlinkat` relative to the descriptors held, never by path again. A short-lived approval record would carry the identity, the rule, the action and the safety level the user approved from plan to clean, and the cleaner would refuse when any of them changed or the safety got worse. Git and simctl removals can't work that way: they stay delegated to their tools, which take a path, so the best Midden can do there is a last identity check right before the command, and a window remains between that check and the tool's own work.
+- Paths longer than PATH_MAX (1024 bytes): the scan walks them, opening each one in pieces relative to the previous descriptor; that is tested to 5,000 levels. Splitting the path doesn't add symlink protection beyond what one `open()` had: only the last component of each piece is opened with `O_NOFOLLOW`. The cleaner doesn't support such paths: it checks and deletes by path, and nothing in it has been tested past PATH_MAX.
 - The running-app check matches by bundle id or display name, so it can miss an app whose process name is different.
 - Build folders don't check for a dev server running in the project yet.
 - The watchdog is tested with an injected blocking reader. A real privacy prompt could not be triggered on the test Mac.
