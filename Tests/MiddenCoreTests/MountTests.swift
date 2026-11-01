@@ -16,12 +16,21 @@ private final class MountedDiskImage {
         self.mountPoint = mountPoint
         image = imageFolder.path("disk.dmg")
         try FileManager.default.createDirectory(atPath: mountPoint, withIntermediateDirectories: true)
-        try sh(["hdiutil", "create", "-size", "20m", "-fs", "APFS", "-volname", "MiddenTest", image, "-quiet"])
-        try sh(["hdiutil", "attach", "-nobrowse", "-mountpoint", mountPoint, image, "-quiet"])
+        try Self.hdiutil(["create", "-size", "20m", "-fs", "APFS", "-volname", "MiddenTest", image, "-quiet"])
+        try Self.hdiutil(["attach", "-nobrowse", "-mountpoint", mountPoint, image, "-quiet"])
     }
 
     deinit {
-        _ = try? sh(["hdiutil", "detach", "-force", mountPoint, "-quiet"])
+        _ = try? Self.hdiutil(["detach", "-force", mountPoint, "-quiet"])
+    }
+
+    /// With a deadline: an hdiutil call once hung for minutes while another
+    /// test run on the same Mac was making disk images too.
+    private static func hdiutil(_ arguments: [String]) throws {
+        let result = Command.run(["/usr/bin/hdiutil"] + arguments, timeout: 60)
+        guard result.succeeded else {
+            throw ShellError(command: "hdiutil \(arguments.joined(separator: " ")): \(result.message)", status: result.status)
+        }
     }
 }
 
