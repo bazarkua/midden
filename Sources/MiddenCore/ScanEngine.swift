@@ -5,12 +5,19 @@ import Synchronization
 /// audits and the simulator query, then the report.
 struct ScanEngine {
     var options: ScanOptions
+    /// Builds the space map; replaceable in tests.
+    var buildSpaceMap: @Sendable (
+        _ records: [SpaceRecord], _ root: String, _ findings: [Finding], _ aliases: [String: [String]]
+    ) -> SpaceNode? = { records, root, findings, aliases in
+        SpaceMap.build(records, root: root, findings: findings, aliases: aliases, floor: WalkDefaults.mapFloor)
+    }
 
     func run(
         progress: @escaping @Sendable (ScanProgress) -> Void,
         cancellation: CancellationFlag
     ) throws -> ScanReport {
         let started = Date()
+        let startedMonotonic = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
         let home: String
         do {
             home = try System.canonicalPath(options.home.path)
@@ -150,16 +157,18 @@ struct ScanEngine {
             .filter(\.isDirectory)
             .sorted { $0.bytes > $1.bytes }
             .map { FolderUsage(path: home + "/" + $0.name, name: $0.name, bytes: $0.bytes) }
+        let spaceMap = buildSpaceMap(walk.spaceRecords, home, findings, aliases)
 
+        // Measured last, so everything above counts, and on a monotonic
+        // clock, which a wall-clock change can't move.
+        let duration = Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - startedMonotonic) / 1e9
         return ScanReport(
-            home: home, startedAt: started, duration: Date().timeIntervalSince(started),
+            home: home, startedAt: started, duration: duration,
             itemsScanned: walk.items, bytesScanned: walk.totalBytes,
             disk: disk, findings: findings, topFolders: topFolders,
             unreadableCount: walk.unreadable,
             needsFullDiskAccess: !fullDiskAccess,
-            spaceMap: SpaceMap.build(
-                walk.spaceRecords, root: home, findings: findings, aliases: aliases,
-                floor: WalkDefaults.mapFloor),
+            spaceMap: spaceMap,
             skippedWithoutFullDiskAccess: walk.skipped,
             readErrors: walk.readErrors,
             skippedFolders: delegate.skippedFolders)
