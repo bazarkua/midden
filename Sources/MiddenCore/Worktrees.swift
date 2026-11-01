@@ -66,10 +66,8 @@ struct WorktreeAuditor: Sendable {
                 action: .manual("Git can't remove it because its repository is gone. If you don't need its files, delete the folder in Finder."),
                 lastActivity: lastActivity)
         }
-        // Optional locks off: `git status` must not rewrite the index of a
-        // worktree we're only looking at.
         func run(_ arguments: String...) -> CommandResult {
-            Command.run([git, "-C", path] + arguments, environment: ["GIT_OPTIONAL_LOCKS": "0"])
+            Command.run([git, "-C", path] + arguments, environment: Command.quietGit)
         }
 
         // Where the repository is, and which branch is checked out.

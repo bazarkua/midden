@@ -24,6 +24,15 @@ enum Sandbox {
 /// Runs command-line tools synchronously, capturing stdout and stderr.
 /// Call it from a thread that may block, never from the cooperative pool.
 enum Command {
+    /// For the git commands Midden runs. No optional locks: `git status`
+    /// must not rewrite the index of a worktree Midden only looks at. And no
+    /// file-system monitor: with core.fsmonitor=true, git would start a
+    /// daemon in every worktree Midden checks and leave it running.
+    static let quietGit = [
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
+    ]
+
     /// Applied to the environment of every command: a value sets a
     /// variable, nil removes it. Empty in the app; tests use it to keep the
     /// machine's git configuration away from the git commands they cause.

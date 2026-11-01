@@ -201,7 +201,8 @@ struct CleanEngine {
             }
             return nil
         case .run(let arguments):
-            let result = Command.run(arguments, timeout: 600)
+            let result = Command.run(
+                arguments, environment: arguments.first == "git" ? Command.quietGit : [:], timeout: 600)
             guard result.succeeded else {
                 let output = result.message
                 return output.isEmpty ? "\(arguments[0]) exited with status \(result.status)." : output
