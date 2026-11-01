@@ -112,6 +112,17 @@ enum Command {
         environment extra: [String: String] = [:],
         timeout: TimeInterval = 120
     ) -> CommandResult {
+        run(arguments, environment: extra, timeout: timeout, waitpid: Darwin.waitpid)
+    }
+
+    /// `run` with waitpid(2) replaceable, so tests can simulate a child
+    /// that never exits or a status that can't be read.
+    static func run(
+        _ arguments: [String],
+        environment extra: [String: String],
+        timeout: TimeInterval,
+        waitpid: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t
+    ) -> CommandResult {
         guard let tool = arguments.first,
             let executable = tool.contains("/") ? tool : find(tool)
         else {
@@ -135,8 +146,11 @@ enum Command {
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        // Only stdin, stdout and stderr reach the child.
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+        // Only stdin, stdout and stderr reach the child, and it leads a new
+        // process group, so a timeout can stop everything it started.
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setpgroup(&attributes, 0)
+        reapLeftovers()
 
         let environment = Self.environment(
             inherited: ProcessInfo.processInfo.environment,
@@ -171,12 +185,20 @@ enum Command {
             return now >= deadline ? 0 : Double(deadline - now) / 1e9
         }
         var killed = false
+        var stoppedAt: UInt64 = 0
+        func stop() {
+            // The whole group: children the command started go with it. A
+            // process that left the group (setsid) is out of reach.
+            kill(-pid, SIGKILL)
+            kill(pid, SIGKILL)
+            killed = true
+            stoppedAt = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        }
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while fds.contains(where: { $0.fd >= 0 }) {
             let remaining = secondsLeft()
             if remaining <= 0 {
-                kill(pid, SIGKILL)
-                killed = true
+                stop()
                 break
             }
             let ready = poll(&fds, nfds_t(fds.count), Int32(min(remaining, 1) * 1000))
@@ -195,33 +217,64 @@ enum Command {
 
         // The deadline holds until the child exits: one that closes stdout
         // and stderr and keeps running must not be waited for without limit.
+        // Nor does a killed child get waited for without limit: SIGKILL
+        // doesn't end a process stuck in the kernel. Every wait here is
+        // nonblocking; a child still there `exitGrace` after the kill is
+        // left for reapLeftovers() and the command fails.
         var status: Int32 = 0
         var reaped = false
+        var statusUnknown = false
+        var lingering = false
         while true {
-            let result = waitpid(pid, &status, killed ? 0 : WNOHANG)
+            let result = waitpid(pid, &status, WNOHANG)
             if result == pid {
                 reaped = true
                 break
             }
             if result < 0 {
                 if errno == EINTR { continue }
-                break  // Not our child any more: the status is unknown.
+                statusUnknown = true  // Not our child any more.
+                break
             }
-            if secondsLeft() <= 0 {
-                kill(pid, SIGKILL)
-                killed = true
-            } else {
-                usleep(5_000)
+            let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+            if !killed, now >= deadline {
+                stop()
+            } else if killed, now >= stoppedAt + UInt64(Self.exitGrace * 1e9) {
+                lingering = true
+                leftovers.withLock { $0.append(pid) }
+                break
             }
+            usleep(5_000)
         }
         // WIFEXITED / WEXITSTATUS, which Swift doesn't import. An unknown
         // status is a failure, never a success.
         let exited = reaped && status & 0x7f == 0
-        let error = String(decoding: collected[1], as: UTF8.self)
+        var error = String(decoding: collected[1], as: UTF8.self)
+        if lingering { error = "It didn't exit after being stopped. " + error }
+        if statusUnknown { error = "Couldn't read its exit status. " + error }
+        if killed { error = "Timed out after \(Int(timeout)) seconds. " + error }
         return CommandResult(
             status: exited && !killed ? (status >> 8) & 0xff : -1,
             output: String(decoding: collected[0], as: UTF8.self),
-            error: killed ? "Timed out after \(Int(timeout)) seconds. " + error : error)
+            error: error)
+    }
+
+    /// How long a killed command gets to exit before run() stops waiting.
+    static let exitGrace: TimeInterval = 2
+
+    /// Killed children that hadn't exited when run() returned. Reaped
+    /// without blocking at the start of every later run(), so no thread
+    /// waits on them and they don't stay zombies once they exit.
+    private static let leftovers = Mutex<[pid_t]>([])
+
+    private static func reapLeftovers() {
+        leftovers.withLock { pids in
+            pids.removeAll { pid in
+                var status: Int32 = 0
+                let result = Darwin.waitpid(pid, &status, WNOHANG)
+                return result == pid || (result < 0 && errno == ECHILD)
+            }
+        }
     }
 
     /// Inherited variables that never reach a command. They choose which
