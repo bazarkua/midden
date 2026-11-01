@@ -231,8 +231,9 @@ enum Command {
                 reaped = true
                 break
             }
-            if result < 0 {
-                if errno == EINTR { continue }
+            // Interrupted: try again, but only after the deadline and grace
+            // checks below, which hold on every turn.
+            if result < 0, errno != EINTR {
                 statusUnknown = true  // Not our child any more.
                 break
             }

@@ -73,6 +73,20 @@ import Testing
         #expect(result?.error.contains("didn't exit") == true, "\(result?.error ?? "")")
     }
 
+    /// waitpid interrupted again and again: the deadline and the grace
+    /// period still hold on every turn of the loop.
+    @Test func endlessInterruptionsDontOutlastTheDeadline() {
+        let outcome = System.withDeadline(10) {
+            Command.run(["/bin/sleep", "30"], environment: [:], timeout: 1) { _, _, _ in
+                errno = EINTR
+                return -1
+            }
+        }
+        #expect(outcome != nil, "Command.run kept retrying an interrupted wait")
+        #expect(outcome?.status == -1)
+        #expect(outcome?.error.contains("Timed out") == true, "\(outcome?.error ?? "")")
+    }
+
     /// When the exit status can't be read, the command didn't succeed.
     @Test func anUnreadableExitStatusIsAFailure() {
         let result = Command.run(["/usr/bin/true"], environment: [:], timeout: 10) { _, _, _ in
