@@ -32,7 +32,8 @@ struct ScanEngine {
             estimator.begin(.reading)
             walk = try Walker(
                 root: home, delegate: delegate,
-                threadCount: options.threadCount ?? WalkDefaults.threadCount
+                threadCount: options.threadCount ?? WalkDefaults.threadCount,
+                mapFloor: WalkDefaults.mapFloor
             ).run(cancellation: cancellation) { estimator.reading($0) }
         } catch {
             throw MiddenError.unreadable(path: home, code: error.code.rawValue)
@@ -160,11 +161,22 @@ struct ScanEngine {
             itemsScanned: walk.items, bytesScanned: walk.totalBytes,
             disk: disk, findings: findings, topFolders: topFolders,
             unreadableCount: walk.unreadable,
-            needsFullDiskAccess: !fullDiskAccess)
+            needsFullDiskAccess: !fullDiskAccess,
+            spaceMap: SpaceMap.build(
+                walk.spaceRecords, root: home, findings: findings, floor: WalkDefaults.mapFloor))
     }
 }
 
 enum WalkDefaults {
+    /// Smallest file or folder the walk remembers for the space map. In a
+    /// 430 GB home with 5.2M items, 57,108 items are at least 1 MB, 6,011 at
+    /// least 20 MB and 2,702 at least 50 MB. 20 MB is 0.05% of a 40 GB home,
+    /// so in any bigger home the map's own threshold (0.05% of the root) is
+    /// higher and the floor hides nothing it would show, while the walk keeps
+    /// only a few thousand records. Measured cost: 27.08 s median scan time
+    /// with the map against 26.81 s without (+1%, within run-to-run noise).
+    static let mapFloor: Int64 = 20_000_000
+
     /// A folder listing that makes no progress for this long is given up,
     /// e.g. open() waiting on a privacy prompt. A large folder keeps making
     /// progress batch by batch, so this only catches calls that are stuck.

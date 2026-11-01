@@ -222,6 +222,33 @@ public struct FolderUsage: Codable, Sendable, Hashable {
     }
 }
 
+/// A file or folder in the home folder's size tree, for the space map.
+public struct SpaceNode: Codable, Sendable, Hashable {
+    /// The item's name. Merged small items are one node named
+    /// "Other (N items)", which carries its parent's path.
+    public var name: String
+    public var path: String
+    /// Bytes allocated on disk, hard links counted once.
+    public var bytes: Int64
+    public var isDirectory: Bool
+    /// The finding this node is, or is inside of, when there is one.
+    public var findingID: String?
+    /// Largest first. When present, they add up to `bytes`.
+    public var children: [SpaceNode]
+
+    public init(
+        name: String, path: String, bytes: Int64, isDirectory: Bool, findingID: String? = nil,
+        children: [SpaceNode] = []
+    ) {
+        self.name = name
+        self.path = path
+        self.bytes = bytes
+        self.isDirectory = isDirectory
+        self.findingID = findingID
+        self.children = children
+    }
+}
+
 public struct DiskSpace: Codable, Sendable, Hashable {
     public var total: Int64
     public var free: Int64
@@ -249,6 +276,9 @@ public struct ScanReport: Codable, Sendable {
     /// Folders the scan couldn't read, usually for lack of Full Disk Access.
     public var unreadableCount: Int
     public var needsFullDiskAccess: Bool
+    /// The home folder's size tree, root = home. Worktrees outside home
+    /// aren't in it.
+    public var spaceMap: SpaceNode?
 
     public init(
         home: String,
@@ -260,7 +290,8 @@ public struct ScanReport: Codable, Sendable {
         findings: [Finding],
         topFolders: [FolderUsage],
         unreadableCount: Int,
-        needsFullDiskAccess: Bool
+        needsFullDiskAccess: Bool,
+        spaceMap: SpaceNode? = nil
     ) {
         self.home = home
         self.startedAt = startedAt
@@ -272,6 +303,7 @@ public struct ScanReport: Codable, Sendable {
         self.topFolders = topFolders
         self.unreadableCount = unreadableCount
         self.needsFullDiskAccess = needsFullDiskAccess
+        self.spaceMap = spaceMap
     }
 
     /// Bytes Midden could free for a given safety level.

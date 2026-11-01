@@ -112,6 +112,8 @@ struct WalkResult<Mark: Sendable> {
     var rootError: POSIXError?
     /// Folders whose listing stopped making progress and was given up.
     var stalled: [String] = []
+    /// Files and folders at or above `mapFloor`, for the space map.
+    var spaceRecords: [SpaceRecord] = []
     /// Marked directories, in no particular order.
     var marked: [SizedDirectory<Mark>]
     /// The root, with the sizes of its immediate children.
@@ -136,7 +138,10 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     let threadCount: Int
     /// A listing without progress for this long is given up.
     let stallTimeout: TimeInterval
+    /// Remember files and folders at least this big, for the space map.
+    let mapFloor: Int64?
     private let lister: Lister
+    private let spaceRecords = Mutex<[SpaceRecord]>([])
 
     private let queue = WorkQueue<Node>()
     private let workers = Mutex<[Worker]>([])
@@ -154,12 +159,14 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     init(
         root: String, delegate: Delegate, threadCount: Int = WalkDefaults.threadCount,
         stallTimeout: TimeInterval = WalkDefaults.stallTimeout,
+        mapFloor: Int64? = nil,
         lister: @escaping Lister = { path, reader throws(POSIXError) in try reader.entries(atPath: path) }
     ) {
         self.root = root
         self.delegate = delegate
         self.threadCount = max(threadCount, 1)
         self.stallTimeout = stallTimeout
+        self.mapFloor = mapFloor
         self.lister = lister
     }
 
@@ -191,6 +198,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             rootError: rootError.load(ordering: .relaxed) == 0
                 ? nil : POSIXError(rootError.load(ordering: .relaxed)),
             stalled: stalled.withLock { $0 },
+            spaceRecords: spaceRecords.withLock { $0 },
             marked: marked.withLock { $0 },
             root: rootRecord.withLock { $0 })
     }
@@ -345,12 +353,18 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
                     size = 0
                 }
                 own += size
+                if let mapFloor, size >= mapFloor {
+                    let item = SpaceRecord(
+                        path: node.path + "/" + entry.name, bytes: size, isDirectory: false, entries: 0)
+                    spaceRecords.withLock { $0.append(item) }
+                }
                 if let record, size >= SizedDirectory<Mark>.smallestRecordedFile {
                     record.add(.init(name: entry.name, bytes: size, isDirectory: false))
                 }
             }
         }
 
+        node.entries.store(entries.count, ordering: .relaxed)
         items.add(Int64(entries.count), ordering: .relaxed)
         bytesSeen.add(own, ordering: .relaxed)
         node.bytes.add(own, ordering: .relaxed)
@@ -375,6 +389,12 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         while true {
             let total = node.bytes.load(ordering: .acquiring)
             record?.finish(total: total)
+            if let mapFloor, total >= mapFloor || node.parent == nil {
+                let item = SpaceRecord(
+                    path: node.path, bytes: total, isDirectory: true,
+                    entries: node.entries.load(ordering: .relaxed))
+                spaceRecords.withLock { $0.append(item) }
+            }
             guard let parent = node.parent else {
                 rootTotal.store(total, ordering: .releasing)
                 return
@@ -413,6 +433,8 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         let context: Delegate.Context
         /// Subdirectories not yet complete, plus one until it's listed.
         let remaining = Atomic<Int>(1)
+        /// Entries in its listing, for the space map.
+        let entries = Atomic<Int>(0)
         /// Who finishes the listing: its worker, or the watchdog giving up.
         let state = Atomic<UInt8>(Node.listing)
         static var listing: UInt8 { 0 }
