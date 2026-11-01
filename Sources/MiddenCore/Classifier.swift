@@ -179,13 +179,30 @@ enum Classifier {
 
     /// The first 4 KB of a regular file, not following symlinks.
     static func readSmallFile(_ path: String) -> String? {
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return nil }
+        guard let fd = openRegularFile(path) else { return nil }
         defer { close(fd) }
         var buffer = [UInt8](repeating: 0, count: 4096)
-        let count = read(fd, &buffer, buffer.count)
+        var count: Int
+        repeat { count = read(fd, &buffer, buffer.count) } while count < 0 && errno == EINTR
         guard count > 0 else { return nil }
         return String(decoding: buffer[..<count], as: UTF8.self)
+    }
+
+    /// Opens a regular file for reading, or returns nil. Never follows a
+    /// symlink and never blocks: the file can be swapped for a FIFO after
+    /// it was listed, and open() of a FIFO waits for a writer forever.
+    static func openRegularFile(_ path: String) -> Int32? {
+        var fd: Int32
+        repeat {
+            fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        } while fd < 0 && errno == EINTR
+        guard fd >= 0 else { return nil }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else {
+            close(fd)
+            return nil
+        }
+        return fd
     }
 
     /// Classifies a file, given the scope of the directory holding it.

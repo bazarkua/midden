@@ -256,8 +256,7 @@ struct WorktreeAuditor: Sendable {
     /// The time of the last entry of a reflog. Each line reads
     /// `<old> <new> <name> <<email>> <unix time> <zone>\t<message>`.
     static func lastReflogTime(_ path: String) -> Double? {
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return nil }
+        guard let fd = Classifier.openRegularFile(path) else { return nil }
         defer { close(fd) }
         var info = stat()
         guard fstat(fd, &info) == 0, info.st_size > 0 else { return nil }
