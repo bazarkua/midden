@@ -72,18 +72,28 @@ start=$(date +%s)
 
 # MARK: Real repositories
 
-# git without the machine's or the user's configuration, without
-# background maintenance, and with fixed names and dates.
+# git in an environment built from nothing: env -i drops every inherited
+# variable, such as GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE or GIT_CONFIG_*,
+# that could point git at another repository. No system, global or
+# template configuration, no hooks, no background maintenance, fixed names
+# and dates, and repository discovery stops at Work/repos.
 fixed="2025-12-01T12:00:00Z"
 git_fixed() {
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    env -i PATH=/usr/bin:/bin HOME="$empty" LC_ALL=C TZ=UTC \
+        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TEMPLATE_DIR="$empty" \
+        GIT_CEILING_DIRECTORIES="$repos_root" \
         GIT_AUTHOR_NAME=bench GIT_AUTHOR_EMAIL=bench@example.invalid GIT_AUTHOR_DATE=$fixed \
         GIT_COMMITTER_NAME=bench GIT_COMMITTER_EMAIL=bench@example.invalid GIT_COMMITTER_DATE=$fixed \
-        git -c maintenance.auto=false -c gc.auto=0 -c core.fsmonitor=false -c init.defaultBranch=main "$@"
+        "$git" -c core.hooksPath=/dev/null -c maintenance.auto=false -c gc.auto=0 \
+        -c core.fsmonitor=false -c init.defaultBranch=main "$@"
 }
 
 if [ "$repos" -gt 0 ]; then
-    command -v git >/dev/null || { echo "make-tree.sh: --repos needs git" >&2; exit 1; }
+    git=$(command -v git) || { echo "make-tree.sh: --repos needs git" >&2; exit 1; }
+    # An empty folder: git's home and its template folder.
+    empty=$(mktemp -d "${TMPDIR:-/tmp}/make-tree-git.XXXXXX") || exit 1
+    trap 'rm -rf "$empty"' EXIT
+    repos_root="$(cd "$dir" && pwd -P)/Work/repos"
     # Adding Work/repos changes Work's time, which maketree fixed: keep it.
     work_time=$(TZ=UTC date -r "$(stat -f %m "$dir/Work")" +%Y%m%d%H%M.%S) || exit 1
     mkdir -p "$dir/Work/repos" || exit 1
