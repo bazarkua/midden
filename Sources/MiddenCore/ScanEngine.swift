@@ -48,6 +48,7 @@ struct ScanEngine {
         let minimum = options.minimumBytes
         var findings: [Finding] = []
         var worktrees: [(match: WorktreeMatch, bytes: Int64, breakdown: [Slice])] = []
+        // `worktrees` holds the ones inside home, sized by the walk.
         let devicesFolder = Simulators.devicesFolder(home: home)
         var simulatorSizes: [String: Int64] = [:]
 
@@ -73,53 +74,40 @@ struct ScanEngine {
             }
         }
 
-        // Worktrees outside home, found through the repositories inside it,
-        // sized with the same walker.
+        // Worktrees outside home, found through the repositories inside it.
+        // One counted pass checks every worktree: those outside home are
+        // sized first with the same walker (and dropped if too small), then
+        // each is audited. Several run at once, so each walker gets 2 threads.
         let external = ExternalWorktrees.discover(gitDirectories: delegate.gitDirectories, home: home)
-        // Each worktree outside home is sized, then each one to report is audited.
-        var steps = external.worktrees.count * 2 + worktrees.count
-        var done = 0
-        estimator.begin(.worktrees, detail: "Checking \(steps - external.worktrees.count) worktrees")
-        for worktree in external.worktrees {
-            if cancellation.isCancelled { throw MiddenError.cancelled }
-            done += 1
-            estimator.step(
-                done, of: steps, detail: "Sizing \(done) of \(external.worktrees.count) worktrees outside home",
-                path: worktree.path)
-            guard let sized = try? Walker(root: worktree.path, delegate: SizeOnly())
-                .run(cancellation: cancellation)
-            else { continue }
-            guard sized.totalBytes >= minimum else {
-                steps -= 1  // Too small to report, so not audited.
-                continue
-            }
-            worktrees.append((
-                worktree, sized.totalBytes,
-                Findings.breakdown(total: sized.totalBytes, children: sized.root?.children ?? [])))
-        }
-
-        if cancellation.isCancelled { throw MiddenError.cancelled }
-        if !worktrees.isEmpty {
+        let candidates =
+            worktrees.map { WorktreeCandidate(match: $0.match, size: ($0.bytes, $0.breakdown)) }
+            + external.worktrees.map { WorktreeCandidate(match: $0, size: nil) }
+        if !candidates.isEmpty {
+            estimator.begin(.worktrees, detail: "Checking worktrees", total: candidates.count)
             let auditor = WorktreeAuditor(
                 processes: .current(), now: now, activeWindow: options.worktreeActiveWindow)
-            let audited = Atomic<Int>(0)
-            let total = worktrees.count
-            let alreadyDone = done
-            let totalSteps = steps
-            let audits = Background.map(worktrees.map(\.match)) { worktree in
-                let audit = auditor.audit(worktree)
-                let count = audited.add(1, ordering: .relaxed).newValue
-                estimator.step(
-                    alreadyDone + count, of: totalSteps, detail: "\(count) of \(total) worktrees",
-                    path: worktree.path)
-                return audit
+            let finished = Atomic<Int>(0)
+            let checked = Background.map(candidates) { candidate -> Finding? in
+                defer {
+                    estimator.step(finished.add(1, ordering: .relaxed).newValue, path: candidate.match.path)
+                }
+                if cancellation.isCancelled { return nil }
+                var size = candidate.size
+                if size == nil {
+                    guard let sized = try? Walker(
+                        root: candidate.match.path, delegate: SizeOnly(), threadCount: 2
+                    ).run(cancellation: cancellation), sized.totalBytes >= minimum
+                    else { return nil }
+                    size = (sized.totalBytes, Findings.breakdown(
+                        total: sized.totalBytes, children: sized.root?.children ?? []))
+                }
+                guard let (bytes, breakdown) = size else { return nil }
+                return Findings.worktree(
+                    candidate.match, audit: auditor.audit(candidate.match), home: home, bytes: bytes,
+                    breakdown: breakdown)
             }
             if cancellation.isCancelled { throw MiddenError.cancelled }
-            for (worktree, audit) in zip(worktrees, audits) {
-                findings.append(Findings.worktree(
-                    worktree.match, audit: audit, home: home, bytes: worktree.bytes,
-                    breakdown: worktree.breakdown))
-            }
+            findings += checked.compactMap { $0 }
         }
 
         // One finding per file: hard links to the same file are reported once,
@@ -188,4 +176,10 @@ enum WalkDefaults {
     static var threadCount: Int {
         min(max(ProcessInfo.processInfo.activeProcessorCount, 4), 12)
     }
+}
+
+/// A worktree to check: sized by the walk, or (outside home) not yet.
+private struct WorktreeCandidate: Sendable {
+    var match: WorktreeMatch
+    var size: (bytes: Int64, breakdown: [Slice])?
 }

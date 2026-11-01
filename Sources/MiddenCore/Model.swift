@@ -329,12 +329,18 @@ public struct ScanProgress: Sendable, Hashable {
     public var fraction: Double?
     /// Nil until the rate is stable, about 2 seconds into the scan.
     public var secondsRemaining: Double?
-    /// e.g. "Checking 65 worktrees" or "17 of 65 worktrees".
+    /// What the phase is doing, as text that stays the same for the whole
+    /// phase, e.g. "Checking worktrees". Counts are in `completed`/`total`.
     public var detail: String?
+    /// Items done in a counted phase (worktrees); nil in other phases.
+    public var completed: Int?
+    /// Items the counted phase will do; fixed for the whole phase.
+    public var total: Int?
 
     public init(
         items: Int64, bytes: Int64, currentPath: String, phase: ScanPhase = .reading,
-        fraction: Double? = nil, secondsRemaining: Double? = nil, detail: String? = nil
+        fraction: Double? = nil, secondsRemaining: Double? = nil, detail: String? = nil,
+        completed: Int? = nil, total: Int? = nil
     ) {
         self.items = items
         self.bytes = bytes
@@ -343,6 +349,8 @@ public struct ScanProgress: Sendable, Hashable {
         self.fraction = fraction
         self.secondsRemaining = secondsRemaining
         self.detail = detail
+        self.completed = completed
+        self.total = total
     }
 }
 

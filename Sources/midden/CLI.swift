@@ -301,8 +301,11 @@ final class ProgressLine: Sendable {
             case .finishing: "Finishing"
             }
         let percent = progress.fraction.map { " \(Int($0 * 100))%" } ?? ""
-        let what = progress.detail
+        var what = progress.detail
             ?? "\(Format.count(progress.items)) items, \(Format.bytes(progress.bytes))"
+        if let completed = progress.completed, let total = progress.total {
+            what += " \(completed) of \(total)"
+        }
         let left = progress.secondsRemaining.map { " · about \(Format.duration($0)) left" } ?? ""
         var line = "\(phase)\(percent) · \(what)\(left)  " + Format.path(progress.currentPath, home: home)
         if line.count > width - 1 { line = String(line.prefix(width - 2)) + "…" }

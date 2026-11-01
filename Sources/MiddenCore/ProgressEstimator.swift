@@ -20,7 +20,8 @@ import Synchronization
 ///   ahead when reading ends, instead of sitting at 99% while work remains.
 ///   Within a phase the fraction is capped at 99% of its share until the
 ///   phase really ends, because a stale expected size may be too small.
-/// - The worktree phase advances one step per worktree sized or audited.
+/// - The worktree phase advances one step per worktree: sized if it's
+///   outside home, then audited.
 /// - The published fraction never goes backwards (it's the running maximum)
 ///   and stays below 1: the report itself is the 100%.
 /// - Time left comes from how fast the fraction moves: an exponential
@@ -49,6 +50,8 @@ final class ProgressEstimator: Sendable {
         var bytes: Int64 = 0
         var path = ""
         var detail: String?
+        var completed: Int?
+        var total: Int?
         var published = 0.0
         var sampleTime: TimeInterval?
         var sampleFraction = 0.0
@@ -75,12 +78,14 @@ final class ProgressEstimator: Sendable {
         self.report = report
     }
 
-    /// Starts a phase.
-    func begin(_ phase: ScanPhase, detail: String? = nil) {
+    /// Starts a phase; `total` for a counted one.
+    func begin(_ phase: ScanPhase, detail: String? = nil, total: Int? = nil) {
         update { state in
             state.phase = phase
             state.phaseFraction = 0
             state.detail = detail
+            state.total = total
+            state.completed = total == nil ? nil : 0
         }
     }
 
@@ -94,11 +99,15 @@ final class ProgressEstimator: Sendable {
         }
     }
 
-    /// One step of the current phase done, e.g. a worktree audited.
-    func step(_ done: Int, of total: Int, detail: String? = nil, path: String? = nil) {
+    /// Steps of a counted phase done, e.g. worktrees checked. Steps can
+    /// finish out of order on several threads; the count only goes up.
+    func step(_ done: Int, path: String? = nil) {
         update { state in
-            state.phaseFraction = total > 0 ? Double(done) / Double(total) : 0
-            if let detail { state.detail = detail }
+            let completed = max(state.completed ?? 0, done)
+            state.completed = completed
+            if let total = state.total, total > 0 {
+                state.phaseFraction = Double(completed) / Double(total)
+            }
             if let path { state.path = path }
         }
     }
@@ -129,7 +138,8 @@ final class ProgressEstimator: Sendable {
             }
             report(ScanProgress(
                 items: state.items, bytes: state.bytes, currentPath: state.path, phase: state.phase,
-                fraction: state.published, secondsRemaining: remaining, detail: state.detail))
+                fraction: state.published, secondsRemaining: remaining, detail: state.detail,
+                completed: state.completed, total: state.total))
         }
     }
 }

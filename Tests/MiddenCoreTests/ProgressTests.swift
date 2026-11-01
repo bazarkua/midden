@@ -38,18 +38,22 @@ private final class Collector: Sendable {
         estimator.reading(ScanProgress(items: 99, bytes: 5_000, currentPath: "/x"))
         #expect(collector.all.last!.fraction! < 0.85)
 
-        estimator.begin(.worktrees, detail: "Checking 4 worktrees")
+        estimator.begin(.worktrees, detail: "Checking worktrees", total: 4)
         #expect(collector.all.last!.fraction! >= 0.85)
-        estimator.step(3, of: 4)
-        estimator.step(2, of: 6)  // The total grew: the bar must not go back.
-        estimator.step(4, of: 4, detail: "4 of 4 worktrees")
+        #expect(collector.all.last!.completed == 0)
+        estimator.step(3)
+        estimator.step(2)  // Steps finish out of order on several threads.
+        estimator.step(4)
+        let counted = collector.all.filter { $0.phase == .worktrees }
+        #expect(counted.map(\.completed) == [0, 3, 3, 4])
+        #expect(counted.allSatisfy { $0.total == 4 && $0.detail == "Checking worktrees" })
         estimator.begin(.finishing)
+        #expect(collector.all.last!.completed == nil)
 
         let fractions = collector.all.compactMap(\.fraction)
         #expect(fractions == fractions.sorted())
         #expect(fractions.allSatisfy { $0 >= 0 && $0 < 1 })
         #expect(collector.all.last?.phase == .finishing)
-        #expect(collector.all.contains { $0.detail == "4 of 4 worktrees" })
     }
 
     @Test func scanReportsPhasesInOrder() async throws {
@@ -70,7 +74,10 @@ private final class Collector: Sendable {
         #expect(phases == phases.sorted())
         #expect(events.first?.phase == .preparing)
         #expect(events.last?.phase == .finishing)
-        #expect(events.contains { $0.phase == .worktrees && $0.detail == "1 of 1 worktrees" })
+        let worktreePhase = events.filter { $0.phase == .worktrees }
+        #expect(worktreePhase.allSatisfy { $0.detail == "Checking worktrees" && $0.total == 1 })
+        #expect(worktreePhase.last?.completed == 1)
+        #expect(events.filter { $0.phase != .worktrees }.allSatisfy { $0.completed == nil && $0.total == nil })
         let fractions = events.compactMap(\.fraction)
         #expect(fractions.count == events.count)
         #expect(fractions == fractions.sorted())
