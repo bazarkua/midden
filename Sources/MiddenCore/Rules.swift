@@ -35,9 +35,18 @@ struct Rule: Sendable {
     /// What the folder itself must show for the rule to apply; when it
     /// doesn't, the next matching rule does.
     var requires: Requirement? = nil
-    /// Its subfolders are versions of one thing (DeviceSupport's OS
-    /// versions): their parent's facts say which is newest.
-    var versionedChildren = false
+    /// What its subfolders' rules need to know about it, read from its
+    /// listing (and files in it) when it's classified.
+    var childFacts: ChildFacts? = nil
+
+    enum ChildFacts: Sendable {
+        /// Its subfolders are versions of one thing (DeviceSupport's OS
+        /// versions): which are the newest.
+        case versions
+        /// It's VS Code's extensions folder: which versions VS Code would
+        /// delete itself (`ObsoleteExtensions`).
+        case obsoleteExtensions
+    }
 
     enum Requirement: Sendable {
         /// A Chromium profile folder: a `Local State` file, or the `mcp-`
@@ -51,6 +60,9 @@ struct Rule: Sendable {
         /// Among the newest of its siblings' versions, or the newest can't
         /// be told (see `DeviceSupportVersions`).
         case newestVersion
+        /// An extension version VS Code marked for removal and would delete
+        /// itself.
+        case obsoleteExtension
     }
 }
 
@@ -98,7 +110,7 @@ enum RuleCatalog {
                 """,
             action: .manual("Clean the versions listed separately, or delete them in Finder."),
             app: .fixed(AppHint(name: "Xcode", bundleID: "com.apple.dt.Xcode")),
-            versionedChildren: true),
+            childFacts: .versions),
         Rule(
             paths: deviceSupport.map { $0 + "/*" },
             category: .developerTools, safety: .review,
@@ -395,9 +407,26 @@ enum RuleCatalog {
             paths: [".vscode/extensions"],
             category: .developerTools, safety: .info,
             title: "VS Code extensions", group: "VS Code",
-            explanation: "Extensions you installed in Visual Studio Code, one folder per extension version.",
+            explanation: """
+                Extensions you installed in Visual Studio Code, one folder per extension \
+                version. Old versions VS Code has marked for removal are listed separately.
+                """,
             action: .manual("Uninstall the ones you don't use from VS Code's Extensions view."),
-            app: .fixed(AppHint(name: "Visual Studio Code", bundleID: "com.microsoft.VSCode"))),
+            app: .fixed(AppHint(name: "Visual Studio Code", bundleID: "com.microsoft.VSCode")),
+            childFacts: .obsoleteExtensions),
+        Rule(
+            paths: [".vscode/extensions/*"],
+            category: .developerTools, safety: .safe,
+            title: "Old VS Code extension ({name})", group: "VS Code",
+            explanation: """
+                An old version of an extension that VS Code replaced or uninstalled and marked \
+                for removal in its .obsolete list. VS Code deletes it itself the next time it \
+                starts; Midden can delete it now. Quit VS Code first.
+                """,
+            action: .removeDirectory,
+            app: .fixed(AppHint(name: "Visual Studio Code", bundleID: "com.microsoft.VSCode")),
+            checkInUse: true,
+            requires: .obsoleteExtension),
 
         // MARK: Package caches
         Rule(
@@ -1034,6 +1063,8 @@ enum RuleCatalog {
             folder.parent.markers.isSuperset(of: [.chromiumPreferences, .chromiumNetworkState])
         case .newestVersion:
             folder.parent.newestVersions?.contains(folder.name) ?? true
+        case .obsoleteExtension:
+            folder.parent.obsoleteExtensions?.contains(folder.name) ?? false
         }
     }
 

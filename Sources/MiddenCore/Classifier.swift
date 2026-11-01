@@ -50,6 +50,9 @@ struct ProjectFacts: Sendable, Hashable {
     /// For a folder of versions (DeviceSupport): the subfolders that are
     /// the newest, or all of them when that can't be told. Nil elsewhere.
     var newestVersions: Set<String>?
+    /// For VS Code's extensions folder: the versions VS Code would delete
+    /// itself. Nil elsewhere.
+    var obsoleteExtensions: Set<String>?
 
     static let none = ProjectFacts()
 
@@ -58,11 +61,17 @@ struct ProjectFacts: Sendable, Hashable {
         self.lastChange = lastChange
     }
 
-    /// Facts for the subfolders of a folder classified as `match`.
-    init(entries: [DirectoryEntry], of match: DirectoryMatch?) {
+    /// Facts for the subfolders of the folder at `path`, classified as
+    /// `match`.
+    init(entries: [DirectoryEntry], of match: DirectoryMatch?, at path: String) {
         self.init(entries: entries)
-        if case .rule(let rule)? = match, rule.rule.versionedChildren {
+        guard case .rule(let rule)? = match, let childFacts = rule.rule.childFacts else { return }
+        switch childFacts {
+        case .versions:
             newestVersions = DeviceSupportVersions.keepForReview(entries)
+        case .obsoleteExtensions:
+            let home = ((path as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
+            obsoleteExtensions = ObsoleteExtensions.eligible(extensions: path, entries: entries, home: home)
         }
     }
 
@@ -330,7 +339,7 @@ extension Classifier {
             if inner.claimed && !scope.claimed { return .inside(ancestor: path, match) }
             if case .rule(let rule)? = match, rule.isContainer { container = (path, .rule(rule)) }
             scope = inner
-            facts = ProjectFacts(entries: childEntries, of: match)
+            facts = ProjectFacts(entries: childEntries, of: match, at: path)
             entries = childEntries
         }
         return .missing

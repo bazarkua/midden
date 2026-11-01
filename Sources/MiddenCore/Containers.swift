@@ -94,7 +94,7 @@ private struct NestedRules: WalkDelegate {
             return Visit(
                 mark: nil,
                 childContext: Context(
-                    relative: context.relative, scope: inner, parent: ProjectFacts(entries: dir.entries, of: match)))
+                    relative: context.relative, scope: inner, parent: ProjectFacts(entries: dir.entries, of: match, at: dir.path)))
         }
         let relative = context.relative.map { $0 + [dir.name] }
         guard !context.scope.claimed, dir.isComplete else {
@@ -110,6 +110,6 @@ private struct NestedRules: WalkDelegate {
             mark: match,
             childContext: Context(
                 relative: relative.flatMap { $0.count < RuleCatalog.maxDepth ? $0 : nil },
-                scope: inner, parent: inner.claimed ? .none : ProjectFacts(entries: dir.entries, of: match)))
+                scope: inner, parent: inner.claimed ? .none : ProjectFacts(entries: dir.entries, of: match, at: dir.path)))
     }
 }
