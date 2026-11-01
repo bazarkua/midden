@@ -52,13 +52,30 @@ struct WorktreeAuditor: Sendable {
         // git can neither check it nor remove it.
         var info = stat()
         if !worktree.gitDir.isEmpty, lstat(worktree.gitDir, &info) != 0 {
+            let recordError = errno
             let repositoryGitDir = ((worktree.gitDir as NSString).deletingLastPathComponent as NSString)
                 .deletingLastPathComponent
             let repositoryPath = (repositoryGitDir as NSString).lastPathComponent == ".git"
                 ? (repositoryGitDir as NSString).deletingLastPathComponent : repositoryGitDir
+            let repositoryExists = lstat(repositoryGitDir, &info) == 0
+            let repositoryError = errno
+            // Only "no such file" means gone. A refusal or an I/O error means
+            // Midden couldn't look, which is no evidence either way.
+            if recordError != ENOENT || (!repositoryExists && repositoryError != ENOENT) {
+                let code = recordError != ENOENT ? recordError : repositoryError
+                return WorktreeAudit(
+                    repositoryName: (repositoryPath as NSString).lastPathComponent, repository: nil,
+                    branch: nil,
+                    checks: [SafetyCheck(
+                        id: "worktreeRecorded", title: "Its repository lists it", passed: false,
+                        detail: "Midden couldn't check its record in \(repositoryPath): \(String(cString: strerror(code))).")],
+                    safety: .info,
+                    action: .manual("Check that \(repositoryPath) is readable, then scan again."),
+                    lastActivity: lastActivity)
+            }
             // The repository is there but its record of this worktree isn't:
             // pruned, or deleted by hand. Git can't check it either way.
-            if lstat(repositoryGitDir, &info) == 0 {
+            if repositoryExists {
                 return WorktreeAudit(
                     repositoryName: (repositoryPath as NSString).lastPathComponent, repository: nil,
                     branch: nil,

@@ -100,6 +100,26 @@ private func check(_ audit: WorktreeAudit, _ id: String) -> SafetyCheck? {
         #expect(record.detail.contains("doesn't list this worktree"), "\(record.detail)")
     }
 
+    /// The record is there but can't be read: that's not "gone", it's
+    /// "couldn't check", and nothing is removable.
+    @Test func anUnreadableWorktreeRecordIsCouldntVerifyNotGone() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        let admin = repository + "/.git/worktrees"
+        chmod(admin, 0o000)
+        defer { chmod(admin, 0o755) }
+
+        let audit = try auditWorktree(home, worktree)
+        #expect(audit.safety == .info)
+        #expect(!audit.action.isAutomatic)
+        let check = try #require(audit.checks.first)
+        #expect(!check.passed)
+        #expect(check.detail.contains("couldn't check"), "\(check.detail)")
+        #expect(!check.detail.contains("no longer exists"), "\(check.detail)")
+        #expect(!check.detail.contains("doesn't list"), "\(check.detail)")
+    }
+
     /// Without git nothing can be checked, so nothing is removable.
     @Test func withoutGitAWorktreeIsOnlyExplained() throws {
         let home = try TempDir("home")
