@@ -10,8 +10,20 @@ private func exists(_ path: String) -> Bool {
 }
 
 @Suite struct CleanerTests {
+    /// Cleans with the Trash replaced by a folder inside the fake home, so
+    /// nothing reaches the real Trash.
     private func clean(_ home: TempDir, _ ids: [String]) async -> [CleanResult] {
-        await Cleaner(home: home.url).clean(ids).results
+        await cleaner(home).clean(ids).results
+    }
+
+    private func cleaner(_ home: TempDir) -> Cleaner {
+        var cleaner = Cleaner(home: home.url)
+        let bin = home.path(".test-trash")
+        cleaner.trash = { path in
+            try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(atPath: path, toPath: bin + "/" + (path as NSString).lastPathComponent)
+        }
+        return cleaner
     }
 
     @Test func deletesAFakeCache() async throws {
@@ -38,16 +50,20 @@ private func exists(_ path: String) -> Bool {
         #expect(try FileManager.default.contentsOfDirectory(atPath: home.path("Library/Logs")).isEmpty)
     }
 
-    @Test func deletesAnOldBuildFolderAndAnInstaller() async throws {
+    @Test func deletesAnOldBuildFolderAndTrashesAnInstaller() async throws {
         let home = try TempDir("home")
         try home.write("code/app/package.json", text: "{}")
         try home.write("code/app/node_modules/dep/index.js", bytes: 1_000)
         try home.write("Downloads/Setup.pkg", bytes: 100_000_000)
         let results = await clean(home, [home.path("code/app/node_modules"), home.path("Downloads/Setup.pkg")])
         #expect(results.allSatisfy { $0.ok }, "\(results)")
-        #expect(results[1].freedBytes >= 100_000_000)
+        #expect(!results[0].movedToTrash)
+        // Your own files go to the Trash, where they still take space.
+        #expect(results[1].movedToTrash)
+        #expect(results[1].freedBytes == 0)
         #expect(!exists(home.path("code/app/node_modules")))
         #expect(!exists(home.path("Downloads/Setup.pkg")))
+        #expect(exists(home.path(".test-trash/Setup.pkg")))
         #expect(exists(home.path("code/app/package.json")))
     }
 

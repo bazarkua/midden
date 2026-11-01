@@ -72,3 +72,14 @@ import Testing
             == "13 days ago (Oct 19, 2026)")
     }
 }
+
+@Test func trashingIsAnAutomaticAction() {
+    #expect(CleanAction.moveToTrash.isAutomatic)
+}
+
+@Test func readsCleanResultsWithoutTheTrashFlag() throws {
+    let json = #"{"id":"/a","ok":true,"freedBytes":10}"#
+    let result = try JSONDecoder().decode(CleanResult.self, from: Data(json.utf8))
+    #expect(result.movedToTrash == false)
+    #expect(result.freedBytes == 10)
+}

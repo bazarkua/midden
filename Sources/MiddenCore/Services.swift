@@ -108,9 +108,17 @@ public struct Scanner: Sendable {
 
 public struct Cleaner: Sendable {
     public var home: URL
+    /// Replaces moving to the Trash, so tests never touch the user's Trash.
+    var trash: (@Sendable (String) throws -> Void)?
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.home = home
+    }
+
+    private func makeEngine() throws -> CleanEngine {
+        var engine = try CleanEngine(home: home)
+        if let trash { engine.trash = trash }
+        return engine
     }
 
     /// Cleans the findings with the given ids. Every id is checked again from
@@ -123,7 +131,7 @@ public struct Cleaner: Sendable {
         let home = self.home
         let summary = try? await Background.run { () -> CleanSummary in
             let freeBefore = System.diskSpace(home.path).free
-            guard let engine = try? CleanEngine(home: home) else {
+            guard let engine = try? makeEngine() else {
                 let results = ids.map { CleanResult(id: $0, ok: false, message: "Can't read the home folder.") }
                 results.forEach(progress)
                 return CleanSummary(results: results, freeBefore: freeBefore, freeAfter: freeBefore)
@@ -145,7 +153,7 @@ public struct Cleaner: Sendable {
     public func plan(_ ids: [String]) async -> [CleanPlan] {
         let home = self.home
         let plans = try? await Background.run { () -> [CleanPlan] in
-            guard let engine = try? CleanEngine(home: home) else {
+            guard let engine = try? makeEngine() else {
                 return ids.map { CleanPlan(id: $0, finding: nil, refusal: "Can't read the home folder.") }
             }
             return ids.map(engine.plan)

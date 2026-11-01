@@ -84,6 +84,7 @@ enum Format {
                 let short = path(argument, home: home)
                 return short.contains(" ") ? "'\(short)'" : short
             }.joined(separator: " ") + "`"
+        case .moveToTrash: "move it to the Trash"
         case .manual(let instructions): instructions
         }
     }

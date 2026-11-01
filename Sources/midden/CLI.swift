@@ -255,7 +255,9 @@ enum CLI {
 
         let summary = await cleaner.clean(approved.map(\.id)) { result in
             let shown = Format.path(result.id, home: home)
-            if result.ok {
+            if result.ok, result.movedToTrash {
+                say("  \(Terminal.paint("✓", .green, enabled: color)) \(shown): moved to the Trash")
+            } else if result.ok {
                 say("  \(Terminal.paint("✓", .green, enabled: color)) \(shown): freed \(Format.bytes(result.freedBytes))")
             } else {
                 say("  \(Terminal.paint("✗", .red, enabled: color)) \(shown): \(result.message ?? "failed")")
@@ -263,6 +265,10 @@ enum CLI {
         }
         let freed = summary.results.reduce(0) { $0 + $1.freedBytes }
         say("Freed \(Format.bytes(freed)). Free space: \(Format.bytes(summary.freeBefore)) → \(Format.bytes(summary.freeAfter)).")
+        let trashed = summary.results.filter(\.movedToTrash).count
+        if trashed > 0 {
+            say("Moved \(trashed == 1 ? "1 item" : "\(trashed) items") to the Trash. Empty the Trash to free that space.")
+        }
         if json {
             // Every id, in the order given.
             let cleaned = Dictionary(summary.results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

@@ -17,6 +17,11 @@ public struct CleanPlan: Sendable, Hashable {
 struct CleanEngine {
     var home: String
     var sandboxed = Sandbox.isActive
+    /// Moves a path to the Trash. Replaceable so tests never touch the
+    /// user's real Trash.
+    var trash: @Sendable (String) throws -> Void = { path in
+        try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+    }
 
     init(home: URL) throws {
         self.home = try System.canonicalPath(home.path)
@@ -37,6 +42,10 @@ struct CleanEngine {
             return CleanResult(id: id, ok: false, message: plan.refusal ?? "Not recognized.")
         }
         let failure = perform(finding)
+        // A trashed item still takes its space until the Trash is emptied.
+        if finding.action == .moveToTrash {
+            return CleanResult(id: id, ok: failure == nil, message: failure, movedToTrash: failure == nil)
+        }
         let freed = max(finding.bytes - Self.allocatedSize(finding.path), 0)
         return CleanResult(id: id, ok: failure == nil, message: failure, freedBytes: freed)
     }
@@ -177,6 +186,13 @@ struct CleanEngine {
             // removeItem deletes symlinks inside the folder, never what they point to.
             do {
                 try fileManager.removeItem(atPath: finding.path)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        case .moveToTrash:
+            do {
+                try trash(finding.path)
                 return nil
             } catch {
                 return error.localizedDescription

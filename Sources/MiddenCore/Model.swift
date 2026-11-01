@@ -11,8 +11,9 @@ public enum Safety: String, Codable, Sendable, CaseIterable, Comparable {
     /// Deletable, but it has a cost worth a look first: a rebuild, a large
     /// re-download, or activity in the last few days.
     case review
-    /// Explained but never deleted by Midden: your own files, or things that
-    /// must be cleaned inside the app that owns them.
+    /// Never deleted by Midden on its own: your own files, or things that
+    /// must be cleaned inside the app that owns them. Your own large files
+    /// can be moved to the Trash when you choose to.
     case info
 
     public static func < (lhs: Safety, rhs: Safety) -> Bool {
@@ -63,7 +64,7 @@ public enum Category: String, Codable, Sendable, CaseIterable, Identifiable {
         case .appCaches: "Files apps keep to load faster. They rebuild them as needed."
         case .system: "Log files and the Trash."
         case .largeFiles: "Single files over 1 GB, and installers you may no longer need."
-        case .personal: "Your own data. Midden explains it but never deletes it."
+        case .personal: "Your own data. Midden explains it and never deletes it for you."
         }
     }
 
@@ -93,6 +94,9 @@ public enum CleanAction: Codable, Sendable, Hashable {
     /// Run the owning tool's own command, e.g. `git worktree remove`, so the
     /// tool can refuse if something is wrong.
     case run([String])
+    /// Move a file of yours to the Trash, where you can still get it back.
+    /// Its space comes back when the Trash is emptied.
+    case moveToTrash
     /// Midden won't delete this. The string says how to do it by hand.
     case manual(String)
 
@@ -409,22 +413,30 @@ public struct CleanResult: Codable, Sendable, Hashable {
     /// Bytes deleted: the item's allocated size before cleaning minus what
     /// is left of it after. Free space reported by the volume can be too
     /// coarse to show this (in the App Sandbox it moves in 409.6 MB steps).
+    /// Zero for items moved to the Trash: they still take space until the
+    /// Trash is emptied.
     public var freedBytes: Int64
+    /// The item went to the Trash instead of being deleted.
+    public var movedToTrash: Bool
 
-    public init(id: String, ok: Bool, message: String? = nil, freedBytes: Int64 = 0) {
+    public init(
+        id: String, ok: Bool, message: String? = nil, freedBytes: Int64 = 0, movedToTrash: Bool = false
+    ) {
         self.id = id
         self.ok = ok
         self.message = message
         self.freedBytes = freedBytes
+        self.movedToTrash = movedToTrash
     }
 
-    /// Also reads results saved before `freedBytes` existed.
+    /// Also reads results saved before `freedBytes` and `movedToTrash` existed.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         ok = try container.decode(Bool.self, forKey: .ok)
         message = try container.decodeIfPresent(String.self, forKey: .message)
         freedBytes = try container.decodeIfPresent(Int64.self, forKey: .freedBytes) ?? 0
+        movedToTrash = try container.decodeIfPresent(Bool.self, forKey: .movedToTrash) ?? false
     }
 }
 

@@ -55,7 +55,7 @@ import Testing
 
         let installer = try #require(byPath[home.path("Downloads/Installer.dmg")])
         #expect(installer.category == .largeFiles)
-        #expect(installer.action == .removeFile)
+        #expect(installer.action == .moveToTrash)
         #expect(byPath[home.path("Downloads")]?.safety == .info)
 
         let old = try #require(byPath[home.path("Projects/old/node_modules")])

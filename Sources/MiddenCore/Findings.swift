@@ -105,14 +105,15 @@ enum Findings {
         case .installer:
             explanation = installerExplanation((entry.name as NSString).pathExtension.lowercased())
             safety = .review
-            action = .removeFile
+            action = .moveToTrash
         case .largeFile:
             explanation = """
-                A single large file. Midden lists files over 1 GB so you can see where your space \
-                goes, but never deletes them.
+                A single large file. Midden can't tell whether you still need it, so it never \
+                deletes it for you. If you don't, move it to the Trash: you can still get it back \
+                until you empty the Trash.
                 """
             safety = .info
-            action = .manual("If you no longer need it, move it to the Trash in Finder.")
+            action = .moveToTrash
         }
         if entry.linkCount > 1 {
             explanation += """
