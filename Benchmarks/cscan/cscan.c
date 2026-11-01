@@ -16,6 +16,15 @@
 //   - Items are the entries listed; the root itself is not one.
 //   - Like Midden, worker threads never materialize dataless (iCloud) files.
 //
+// Partial work is reported, never passed off as a complete walk, with
+// Midden's rules: a folder that can't be opened or listed, or whose listing
+// misses entries (an entry error, a missing required attribute, a malformed
+// record, a read that fails partway), counts as one read error. A folder or
+// entry that vanished meanwhile (ENOENT, ENOTDIR, EDEADLK) doesn't. EINTR
+// and ENOMEM are retried as Midden retries them. The exit status is 1 when
+// anything was left out, so a partial walk can't pass for the same work
+// done faster.
+//
 // Parallelism, also as in Midden: a fixed pool of threads shares one LIFO
 // stack of directories. A thread keeps one subdirectory of each listing for
 // itself and pushes the rest, so it continues depth first and takes the
@@ -24,9 +33,12 @@
 // Two switches measure other strategies, one at a time:
 //   --openat    Open each directory relative to its parent's descriptor
 //               instead of by full path, as Midden does. Spares the kernel a
-//               lookup of every path component, and has no PATH_MAX limit.
-//   --readdir   List with readdir plus one fstatat per entry, as du and find
-//               do, instead of getattrlistbulk. Sizes come from st_blocks.
+//               lookup of every path component. Raises the descriptor limit,
+//               and reports it with the most descriptors held at once.
+//   --readdir   List with readdir plus one fstatat per entry, the classic way
+//               and Midden's own fallback, instead of getattrlistbulk. (du
+//               and find use fts, which on macOS lists with getattrlistbulk
+//               too: see Benchmarks/fts-probe.sh.) Sizes come from st_blocks.
 //
 // Build: clang -std=c11 -O3 -Wall -Wextra -o cscan cscan.c
 // Usage: cscan [--threads N] [--openat] [--readdir] PATH
@@ -35,6 +47,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <os/lock.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -51,11 +64,83 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { BUFFER_SIZE = 128 * 1024, SHARDS = 64 };
+// Retries, as in Midden's DirectoryReader.
+enum { BUFFER_SIZE = 128 * 1024, SHARDS = 64, INTERRUPT_RETRIES = 100, MEMORY_RETRIES = 3 };
 
 static bool use_openat = false;
 static bool use_readdir = false;
 static dev_t root_device;
+
+// Gone since its parent was listed, no longer a folder, or not downloaded.
+static bool benign(int code) { return code == ENOENT || code == ENOTDIR || code == EDEADLK; }
+
+// MARK: Descriptors
+
+// Directory descriptors held right now and at most, across threads.
+static atomic_long open_now, open_most;
+
+static int counted(int fd) {
+    if (fd >= 0) {
+        long now = atomic_fetch_add_explicit(&open_now, 1, memory_order_relaxed) + 1;
+        long most = atomic_load_explicit(&open_most, memory_order_relaxed);
+        while (now > most && !atomic_compare_exchange_weak(&open_most, &most, now)) {}
+    }
+    return fd;
+}
+
+static void close_counted(int fd) {
+    close(fd);
+    atomic_fetch_sub_explicit(&open_now, 1, memory_order_relaxed);
+}
+
+static const int OPEN_FLAGS = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+
+// open() or openat(), retried on EINTR. Returns -1 with errno set.
+static int open_retrying(int at, const char *path) {
+    int fd;
+    do fd = at >= 0 ? openat(at, path, OPEN_FLAGS) : open(path, OPEN_FLAGS);
+    while (fd < 0 && errno == EINTR);
+    return counted(fd);
+}
+
+// Opens a directory by path, as Midden does. open() fails with ENAMETOOLONG
+// for a path of PATH_MAX bytes or more, so a longer one is opened in pieces
+// split at slashes, each shorter than that and opened relative to the one
+// before, the same way.
+static int open_path(const char *path) {
+    size_t length = strlen(path);
+    if (length < PATH_MAX) return open_retrying(-1, path);
+    char *copy = strdup(path);
+    if (!copy) abort();
+    int fd = -1;
+    size_t start = 0;
+    while (start < length) {
+        // The longest piece that fits, ending at a slash (or the end).
+        size_t end = start + PATH_MAX - 1 < length ? start + PATH_MAX - 1 : length;
+        if (end < length) {
+            while (end > start && copy[end] != '/') end--;
+            if (end == start) {
+                errno = ENAMETOOLONG;  // One component longer than PATH_MAX.
+                break;
+            }
+        }
+        char saved = copy[end];
+        copy[end] = '\0';
+        int next = open_retrying(fd, copy + start);
+        int code = errno;
+        copy[end] = saved;
+        if (fd >= 0) close_counted(fd);
+        fd = next;
+        if (fd < 0) {
+            errno = code;
+            break;
+        }
+        start = end;
+        while (start < length && copy[start] == '/') start++;
+    }
+    free(copy);
+    return fd;
+}
 
 // MARK: Directories to visit
 
@@ -73,7 +158,7 @@ typedef struct {
 
 static void release(handle_t *handle) {
     if (handle && atomic_fetch_sub_explicit(&handle->pending, 1, memory_order_acq_rel) == 1) {
-        close(handle->fd);
+        close_counted(handle->fd);
         free(handle);
     }
 }
@@ -203,7 +288,10 @@ typedef struct {
     _Alignas(128) int64_t items;
     int64_t bytes;
     int64_t directories;
-    int64_t errors;
+    int64_t failed;        // Folders that couldn't be opened or listed at all.
+    int64_t incomplete;    // Folders listed, but with entries missing.
+    int64_t entry_errors;  // Entries left out of those listings.
+    int64_t too_long;      // Folders whose path was too long to open.
     char *buffer;
     work_t *children;
     size_t child_capacity;
@@ -216,6 +304,10 @@ static struct attrlist request = {
     .dirattr = ATTR_DIR_ALLOCSIZE,
     .fileattr = ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE,
 };
+
+// Every entry must come with these, as Midden requires.
+static const attrgroup_t REQUIRED_COMMON =
+    ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_FILEID;
 
 // Records are 4-byte aligned, so 8-byte fields may not be.
 #define READ(type, pointer) ({ type value_; memcpy(&value_, (pointer), sizeof(type)); value_; })
@@ -238,13 +330,22 @@ static work_t child(const work_t *parent, handle_t *handle, const char *name, si
     return (work_t){path, handle};
 }
 
-// What a listing found so far: the subdirectories to visit.
+// One folder's listing so far: the subdirectories to visit, and whether
+// entries are missing.
 typedef struct {
     worker_t *worker;
     const work_t *work;
     handle_t *handle;
     size_t children;
+    bool incomplete;
 } listing_t;
+
+// An entry the listing couldn't describe. One that vanished is just gone.
+static void left_out(listing_t *l, int code) {
+    if (code == ENOENT) return;
+    l->incomplete = true;
+    l->worker->entry_errors++;
+}
 
 // Counts one entry. The same rules for both ways of listing.
 static void count(listing_t *l, const char *name, size_t length, bool is_directory, dev_t device,
@@ -265,133 +366,198 @@ static void count(listing_t *l, const char *name, size_t length, bool is_directo
     }
 }
 
+static void list_readdir(listing_t *l, int fd);
+
+// Parses one record of `length` bytes and counts its entry. Fields are
+// checked against the record. Returns 0, or why the entry was left out: an
+// entry error, a missing required attribute (ENOATTR) or a field outside
+// the record (EIO).
+static int parse(listing_t *l, const char *record, size_t length) {
+    const char *end = record + length;
+    const char *field = record + sizeof(uint32_t);
+    attribute_set_t returned = READ(attribute_set_t, field);
+    field += sizeof(attribute_set_t);
+
+    if (returned.commonattr & ATTR_CMN_ERROR) {
+        if (field + sizeof(uint32_t) > end) return EIO;
+        uint32_t error = READ(uint32_t, field);
+        field += sizeof(uint32_t);
+        if (error) return (int)error;
+    }
+    if ((returned.commonattr & REQUIRED_COMMON) != REQUIRED_COMMON) return ENOATTR;
+
+    if (field + sizeof(attrreference_t) > end) return EIO;
+    attrreference_t name_ref = READ(attrreference_t, field);
+    // The offset is from the reference itself; the length counts the NUL.
+    const char *name = field + name_ref.attr_dataoffset;
+    if (name_ref.attr_dataoffset <= 0 || name_ref.attr_length < 1 || name + name_ref.attr_length > end
+        || name[name_ref.attr_length - 1] != '\0') {
+        return EIO;
+    }
+    size_t name_length = name_ref.attr_length - 1;
+    field += sizeof(attrreference_t);
+
+    if (field + sizeof(dev_t) + sizeof(fsobj_type_t) + sizeof(struct timespec) + sizeof(uint64_t) > end) {
+        return EIO;
+    }
+    dev_t device = READ(dev_t, field);
+    field += sizeof(dev_t);
+    fsobj_type_t type = READ(fsobj_type_t, field);
+    field += sizeof(fsobj_type_t);
+    field += sizeof(struct timespec);  // Modification time: requested as Midden does, not needed.
+    uint64_t inode = READ(uint64_t, field);
+    field += sizeof(uint64_t);
+
+    if (type == VDIR) {
+        if (!(returned.dirattr & ATTR_DIR_ALLOCSIZE)) return ENOATTR;
+        if (field + sizeof(off_t) > end) return EIO;
+        count(l, name, name_length, true, device, inode, 1, READ(off_t, field));
+    } else {
+        attrgroup_t required = ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE;
+        if ((returned.fileattr & required) != required) return ENOATTR;
+        if (field + sizeof(uint32_t) + sizeof(off_t) > end) return EIO;
+        uint32_t links = READ(uint32_t, field);
+        off_t allocated = READ(off_t, field + sizeof(uint32_t));
+        count(l, name, name_length, false, device, inode, links, allocated);
+    }
+    return 0;
+}
+
 // Lists with getattrlistbulk: one call returns a batch of entries with
-// their attributes.
-static void list_bulk(listing_t *l, int fd) {
+// their attributes. Returns 0, or the error when nothing could be read.
+static int list_bulk(listing_t *l, int fd) {
     worker_t *w = l->worker;
     bool first_call = true;
+    int interrupted = 0, out_of_memory = 0;
     for (;;) {
         int entries = getattrlistbulk(fd, &request, w->buffer, BUFFER_SIZE, 0);
         if (entries < 0) {
-            // Midden falls back to readdir for file systems without
-            // getattrlistbulk; this yardstick is meant for APFS and says so.
-            if (errno == ENOTSUP && first_call) {
-                fprintf(stderr, "cscan: %s: getattrlistbulk not supported\n", l->work->path);
+            int code = errno;
+            if (code == EINTR && interrupted < INTERRUPT_RETRIES) {
+                interrupted++;
+                continue;
             }
-            w->errors++;
-            return;
+            if (code == ENOMEM && out_of_memory < MEMORY_RETRIES) {
+                out_of_memory++;
+                usleep(1000 * (useconds_t)out_of_memory);
+                continue;
+            }
+            // A file system without getattrlistbulk fails at once; Midden
+            // falls back to readdir for that folder, and so does this.
+            if (code == ENOTSUP && first_call) {
+                int copy = counted(dup(fd));
+                if (copy < 0) return errno;
+                list_readdir(l, copy);
+                return 0;
+            }
+            if (first_call) return code;  // Nothing read: the folder failed.
+            l->incomplete = true;         // Keep what was read.
+            return 0;
         }
         first_call = false;
-        if (entries == 0) return;
-        const char *record = w->buffer;
+        interrupted = out_of_memory = 0;
+        if (entries == 0) return 0;
+        const char *record = w->buffer, *buffer_end = w->buffer + BUFFER_SIZE;
         for (int i = 0; i < entries; i++) {
+            // A malformed record means the rest of the batch can't be trusted.
+            if (record + sizeof(uint32_t) + sizeof(attribute_set_t) > buffer_end) {
+                l->incomplete = true;
+                return 0;
+            }
             uint32_t length = READ(uint32_t, record);
-            const char *field = record + sizeof(uint32_t);
-            attribute_set_t returned = READ(attribute_set_t, field);
-            field += sizeof(attribute_set_t);
+            if (length < sizeof(uint32_t) + sizeof(attribute_set_t) || record + length > buffer_end) {
+                l->incomplete = true;
+                return 0;
+            }
+            int code = parse(l, record, length);
+            if (code) left_out(l, code);
             record += length;
-
-            if (returned.commonattr & ATTR_CMN_ERROR) {
-                uint32_t error = READ(uint32_t, field);
-                field += sizeof(uint32_t);
-                if (error) continue;
-            }
-            if (!(returned.commonattr & ATTR_CMN_NAME)) continue;
-            attrreference_t name_ref = READ(attrreference_t, field);
-            const char *name = field + name_ref.attr_dataoffset;
-            size_t name_length = name_ref.attr_length ? name_ref.attr_length - 1 : 0;
-            field += sizeof(attrreference_t);
-
-            dev_t device = 0;
-            fsobj_type_t type = VNON;
-            uint64_t inode = 0;
-            uint32_t links = 1;
-            off_t allocated = 0;
-            if (returned.commonattr & ATTR_CMN_DEVID) {
-                device = READ(dev_t, field);
-                field += sizeof(dev_t);
-            }
-            if (returned.commonattr & ATTR_CMN_OBJTYPE) {
-                type = READ(fsobj_type_t, field);
-                field += sizeof(fsobj_type_t);
-            }
-            if (returned.commonattr & ATTR_CMN_MODTIME) field += sizeof(struct timespec);
-            if (returned.commonattr & ATTR_CMN_FILEID) {
-                inode = READ(uint64_t, field);
-                field += sizeof(uint64_t);
-            }
-            if (returned.dirattr & ATTR_DIR_ALLOCSIZE) {
-                allocated = READ(off_t, field);
-                field += sizeof(off_t);
-            }
-            if (returned.fileattr & ATTR_FILE_LINKCOUNT) {
-                links = READ(uint32_t, field);
-                field += sizeof(uint32_t);
-            }
-            if (returned.fileattr & ATTR_FILE_ALLOCSIZE) {
-                allocated = READ(off_t, field);
-                field += sizeof(off_t);
-            }
-            count(l, name, name_length, type == VDIR, device, inode, links, allocated);
         }
     }
 }
 
-// Lists the classic way, as du and find do: readdir, then one fstatat per
-// entry. Same rules as Midden's own readdir fallback: an entry that is gone
-// by the time it's stat'ed is skipped. Takes ownership of `fd`.
+// Lists the classic way: readdir, then one fstatat per entry. Same rules as
+// Midden's readdir fallback. Takes ownership of `fd`.
 static void list_readdir(listing_t *l, int fd) {
     DIR *dir = fdopendir(fd);
     if (!dir) {
-        close(fd);
-        l->worker->errors++;
+        int code = errno;
+        close_counted(fd);
+        if (!benign(code)) l->incomplete = true;
         return;
     }
-    struct dirent *entry;
-    while ((entry = readdir(dir))) {
+    int interrupted = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(dir);
+        if (!entry) {
+            int code = errno;
+            if (code == EINTR && interrupted < INTERRUPT_RETRIES) {
+                interrupted++;
+                continue;
+            }
+            if (code != 0) l->incomplete = true;  // An error, not the end.
+            break;
+        }
         const char *name = entry->d_name;
         if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) continue;
         struct stat info;
-        if (fstatat(dirfd(dir), name, &info, AT_SYMLINK_NOFOLLOW) != 0) continue;
+        int result, attempts = 0;
+        do result = fstatat(dirfd(dir), name, &info, AT_SYMLINK_NOFOLLOW);
+        while (result != 0 && errno == EINTR && ++attempts < INTERRUPT_RETRIES);
+        if (result != 0) {
+            left_out(l, errno);
+            continue;
+        }
         count(l, name, entry->d_namlen, S_ISDIR(info.st_mode), info.st_dev, info.st_ino,
               (uint32_t)info.st_nlink, (int64_t)info.st_blocks * 512);
     }
     closedir(dir);
+    atomic_fetch_sub_explicit(&open_now, 1, memory_order_relaxed);
 }
 
 // Lists one directory, adds its entries to the thread's totals and queues
 // its subdirectories. Returns true with one of them in *next for the calling
 // thread to continue with.
 static bool list(worker_t *w, work_t *work, work_t *next) {
-    int flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
-    int fd = work->parent ? openat(work->parent->fd, work->path, flags) : open(work->path, flags);
+    int fd = work->parent ? open_retrying(work->parent->fd, work->path) : open_path(work->path);
+    int code = errno;  // Before releasing the parent, which may close a descriptor.
     release(work->parent);
     if (fd < 0) {
-        if (errno != ENOENT && errno != ENOTDIR) w->errors++;
+        if (!benign(code)) w->failed++;
+        if (code == ENAMETOOLONG) w->too_long++;
         free(work->path);
         return false;
     }
 
-    listing_t l = {w, work, NULL, 0};
+    listing_t l = {w, work, NULL, 0, false};
     if (use_openat) {
         l.handle = malloc(sizeof(handle_t));
         if (!l.handle) abort();
         l.handle->fd = fd;
     }
+    int failure = 0;
     if (use_readdir) {
         // readdir owns the descriptor it reads; subdirectories opened
         // relative to this one need their own.
-        list_readdir(&l, use_openat ? dup(fd) : fd);
+        int copy = use_openat ? counted(dup(fd)) : fd;
+        if (copy < 0) failure = errno;
+        else list_readdir(&l, copy);
     } else {
-        list_bulk(&l, fd);
+        failure = list_bulk(&l, fd);
     }
     free(work->path);
+    if (failure) {
+        if (!benign(failure)) w->failed++;
+    } else if (l.incomplete) {
+        w->incomplete++;
+    }
 
     size_t children = l.children;
     if (use_openat && children > 0) {
         atomic_init(&l.handle->pending, (int)children);
     } else {
-        if (!use_readdir || use_openat) close(fd);
+        if (!use_readdir || use_openat) close_counted(fd);
         free(l.handle);
     }
     if (children == 0) return false;
@@ -447,13 +613,14 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: cscan [--threads N] [--openat] [--readdir] PATH\n");
         return 2;
     }
-    if (use_openat) {
-        // Each directory with subdirectories still to open holds a descriptor.
-        struct rlimit limit;
-        if (getrlimit(RLIMIT_NOFILE, &limit) == 0) {
-            limit.rlim_cur = limit.rlim_max < OPEN_MAX ? limit.rlim_max : OPEN_MAX;
-            setrlimit(RLIMIT_NOFILE, &limit);
-        }
+    struct rlimit limit = {0, 0};
+    getrlimit(RLIMIT_NOFILE, &limit);
+    rlim_t wanted = limit.rlim_max < OPEN_MAX ? limit.rlim_max : OPEN_MAX;
+    if (use_openat && limit.rlim_cur < wanted) {
+        // Each directory with subdirectories still to open holds a
+        // descriptor. Raise the limit, never lower it.
+        limit.rlim_cur = wanted;
+        if (setrlimit(RLIMIT_NOFILE, &limit) != 0) getrlimit(RLIMIT_NOFILE, &limit);
     }
 
     struct timespec start, end;
@@ -472,20 +639,36 @@ int main(int argc, char **argv) {
     pthread_t *ids = calloc((size_t)threads, sizeof(pthread_t));
     if (!workers || !ids) abort();
     memset(workers, 0, sizeof(worker_t) * (size_t)threads);
-    for (int i = 0; i < threads; i++) pthread_create(&ids[i], NULL, work, &workers[i]);
+    for (int i = 0; i < threads; i++) {
+        int code = pthread_create(&ids[i], NULL, work, &workers[i]);
+        if (code != 0) {
+            fprintf(stderr, "cscan: can't start thread %d of %d: %s\n", i + 1, threads, strerror(code));
+            return 1;
+        }
+    }
 
-    int64_t items = 0, bytes = (int64_t)info.st_blocks * 512, directories = 0, errors = 0;
+    int64_t items = 0, bytes = (int64_t)info.st_blocks * 512, directories = 0;
+    int64_t failed = 0, incomplete = 0, entry_errors = 0, too_long = 0;
     for (int i = 0; i < threads; i++) {
         pthread_join(ids[i], NULL);
         items += workers[i].items;
         bytes += workers[i].bytes;
         directories += workers[i].directories;
-        errors += workers[i].errors;
+        failed += workers[i].failed;
+        incomplete += workers[i].incomplete;
+        entry_errors += workers[i].entry_errors;
+        too_long += workers[i].too_long;
     }
     clock_gettime(CLOCK_MONOTONIC, &end);
     double seconds = (double)(end.tv_sec - start.tv_sec) + (double)(end.tv_nsec - start.tv_nsec) / 1e9;
-    printf("items=%lld bytes=%lld directories=%lld errors=%lld threads=%d open=%s list=%s seconds=%.3f\n",
-           (long long)items, (long long)bytes, (long long)directories, (long long)errors, threads,
-           use_openat ? "openat" : "path", use_readdir ? "readdir" : "bulk", seconds);
-    return 0;
+    // errors: folders not fully read, as Midden counts read errors.
+    int64_t errors = failed + incomplete;
+    printf("items=%lld bytes=%lld directories=%lld errors=%lld failed=%lld incomplete=%lld"
+           " entry_errors=%lld too_long=%lld threads=%d open=%s list=%s fd_limit=%llu"
+           " fd_high_water=%ld seconds=%.3f\n",
+           (long long)items, (long long)bytes, (long long)directories, (long long)errors,
+           (long long)failed, (long long)incomplete, (long long)entry_errors, (long long)too_long,
+           threads, use_openat ? "openat" : "path", use_readdir ? "readdir" : "bulk",
+           (unsigned long long)limit.rlim_cur, atomic_load(&open_most), seconds);
+    return errors > 0 ? 1 : 0;
 }
