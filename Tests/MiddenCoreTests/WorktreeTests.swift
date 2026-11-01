@@ -161,6 +161,12 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         let inUse = try #require(check(result, "Not in use"))
         #expect(!inUse.passed)
         #expect(inUse.detail.contains("sleep (pid \(sleeper.processIdentifier))"))
+        // The refusal the cleaner shows names the program too.
+        guard case .manual(let instructions) = result.action else {
+            Issue.record("a worktree in use must not be removable")
+            return
+        }
+        #expect(instructions.contains("the programs working in it (sleep (pid \(sleeper.processIdentifier)))"))
     }
 
     @Test func bareRepositoryRemovesFromTheRepository() throws {

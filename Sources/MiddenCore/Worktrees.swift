@@ -156,10 +156,11 @@ struct WorktreeAuditor: Sendable {
                 detail: "No running program has its working directory in it."))
         } else {
             let names = users.prefix(3).map { "\($0.command) (pid \($0.pid))" }.joined(separator: ", ")
+                + (users.count > 3 ? " and others" : "")
             checks.append(SafetyCheck(
-                id: "inUse", title: "Not in use", passed: false,
-                detail: "In use by \(names)\(users.count > 3 ? " and others" : "")."))
-            steps.append("quit the programs working in it")
+                id: "inUse", title: "Not in use", passed: false, detail: "In use by \(names)."))
+            // Named here too, so a refusal explains itself.
+            steps.append("quit the programs working in it (\(names))")
         }
 
         if !steps.isEmpty {
