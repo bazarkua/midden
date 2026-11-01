@@ -36,10 +36,17 @@ struct CleanEngine {
         guard let finding = plan.finding, plan.refusal == nil else {
             return CleanResult(id: id, ok: false, message: plan.refusal ?? "Not recognized.")
         }
-        if let failure = perform(finding) {
-            return CleanResult(id: id, ok: false, message: failure)
-        }
-        return CleanResult(id: id, ok: true)
+        let failure = perform(finding)
+        let freed = max(finding.bytes - Self.allocatedSize(finding.path), 0)
+        return CleanResult(id: id, ok: failure == nil, message: failure, freedBytes: freed)
+    }
+
+    /// What is on disk at `path` now: 0 when it's gone.
+    static func allocatedSize(_ path: String) -> Int64 {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return 0 }
+        guard info.st_mode & S_IFMT == S_IFDIR else { return Int64(info.st_blocks) * 512 }
+        return (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
     }
 
     struct Refusal: Error {

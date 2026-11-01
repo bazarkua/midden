@@ -280,11 +280,25 @@ public struct CleanResult: Codable, Sendable, Hashable {
     public var ok: Bool
     /// Why it failed or was refused. Nil on success.
     public var message: String?
+    /// Bytes deleted: the item's allocated size before cleaning minus what
+    /// is left of it after. Free space reported by the volume can be too
+    /// coarse to show this (in the App Sandbox it moves in 409.6 MB steps).
+    public var freedBytes: Int64
 
-    public init(id: String, ok: Bool, message: String? = nil) {
+    public init(id: String, ok: Bool, message: String? = nil, freedBytes: Int64 = 0) {
         self.id = id
         self.ok = ok
         self.message = message
+        self.freedBytes = freedBytes
+    }
+
+    /// Also reads results saved before `freedBytes` existed.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        ok = try container.decode(Bool.self, forKey: .ok)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        freedBytes = try container.decodeIfPresent(Int64.self, forKey: .freedBytes) ?? 0
     }
 }
 

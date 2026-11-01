@@ -29,6 +29,9 @@ private func exists(_ path: String) -> Bool {
         ])
         #expect(summary.results.allSatisfy { $0.ok })
         #expect(summary.freeBefore > 0)
+        // Measured from what was deleted, not from the volume's free space.
+        #expect(summary.results[0].freedBytes >= 200_000)
+        #expect(summary.results[1].freedBytes >= 2_000)
         #expect(!exists(home.path("Library/Caches/com.example.fake")))
         // removeContents keeps the folder itself.
         #expect(exists(home.path("Library/Logs")))
@@ -42,6 +45,7 @@ private func exists(_ path: String) -> Bool {
         try home.write("Downloads/Setup.pkg", bytes: 100_000_000)
         let results = await clean(home, [home.path("code/app/node_modules"), home.path("Downloads/Setup.pkg")])
         #expect(results.allSatisfy { $0.ok }, "\(results)")
+        #expect(results[1].freedBytes >= 100_000_000)
         #expect(!exists(home.path("code/app/node_modules")))
         #expect(!exists(home.path("Downloads/Setup.pkg")))
         #expect(exists(home.path("code/app/package.json")))
@@ -80,6 +84,7 @@ private func exists(_ path: String) -> Bool {
         let results = await clean(home, Array(refused.keys))
         for result in results {
             #expect(!result.ok, "\(result.id)")
+            #expect(result.freedBytes == 0)
             let expected = refused[result.id] ?? "?"
             #expect(result.message?.contains(expected) == true, "\(result.id): \(result.message ?? "")")
         }

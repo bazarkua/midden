@@ -244,13 +244,13 @@ enum CLI {
         let summary = await cleaner.clean(approved.map(\.id)) { result in
             let shown = Format.path(result.id, home: home)
             if result.ok {
-                say("  \(Terminal.paint("✓", .green, enabled: color)) \(shown)")
+                say("  \(Terminal.paint("✓", .green, enabled: color)) \(shown): freed \(Format.bytes(result.freedBytes))")
             } else {
                 say("  \(Terminal.paint("✗", .red, enabled: color)) \(shown): \(result.message ?? "failed")")
             }
         }
-        let freed = summary.freeAfter - summary.freeBefore
-        say("Free space: \(Format.bytes(summary.freeBefore)) → \(Format.bytes(summary.freeAfter)) (\(freed >= 0 ? "+" : "−")\(Format.bytes(abs(freed)))).")
+        let freed = summary.results.reduce(0) { $0 + $1.freedBytes }
+        say("Freed \(Format.bytes(freed)). Free space: \(Format.bytes(summary.freeBefore)) → \(Format.bytes(summary.freeAfter)).")
         if json {
             // Every id, in the order given.
             let cleaned = Dictionary(summary.results.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
