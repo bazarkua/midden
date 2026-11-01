@@ -43,6 +43,16 @@ enum BuildFolderKind: Sendable, Hashable {
     static func detect(
         name: String, parent: ProjectFacts, entries: [DirectoryEntry], path: String? = nil
     ) -> BuildFolderKind? {
+        // A Python environment is never a build folder by its name: one
+        // named node_modules beside a package.json, or target beside a
+        // Cargo.toml, is still an environment, whose hand-installed
+        // packages nothing records. Any pyvenv.cfg stops a name-based
+        // verdict: an environment when its layout is plausible or its name
+        // is one a build folder has, even when pyvenv.cfg can't be read.
+        if entries.contains(where: { $0.name == "pyvenv.cfg" }) {
+            if let path, isPythonEnvironment(path: path, entries: entries) { return .pythonEnvironment }
+            return names.contains(name) ? .pythonEnvironment : nil
+        }
         let markers = parent.markers
         switch name {
         case "node_modules":
@@ -52,8 +62,8 @@ enum BuildFolderKind: Sendable, Hashable {
         case "target":
             return markers.contains(.cargoToml) ? .cargoTarget : nil
         case ".venv", "venv":
-            let isEnvironment = entries.contains { $0.name == "pyvenv.cfg" && $0.kind == .file }
-            return isEnvironment ? .pythonEnvironment : nil
+            // Without a pyvenv.cfg (handled above), not an environment.
+            return nil
         case "Pods":
             return markers.contains(.podfile) ? .pods : nil
         case ".gradle":

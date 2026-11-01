@@ -53,6 +53,42 @@ import Testing
         #expect(try reclassify(home, "real").buildFolder == .pythonEnvironment)
     }
 
+    /// An environment named like a build folder, beside that build tool's
+    /// project file, is still an environment: Review, and kept when every
+    /// Safe item is cleaned. So is one whose pyvenv.cfg can't be read.
+    @Test func environmentsNamedLikeBuildFoldersStayReview() async throws {
+        let home = try TempDir("home")
+        let cases = [
+            ("js", "package.json", "node_modules"), ("rs", "Cargo.toml", "target"), ("gr", "build.gradle", "build"),
+            ("sw", "Package.swift", ".build"), ("py", "pyproject.toml", ".mypy_cache"),
+        ]
+        for (project, marker, name) in cases {
+            try home.write("\(project)/\(marker)", text: "x")
+            try makeEnvironment(home, "\(project)/\(name)")
+            try home.touch("\(project)/\(marker)", daysAgo: 30)
+        }
+        try home.write("locked/package.json", text: "{}")
+        try home.touch("locked/package.json", daysAgo: 30)
+        try makeEnvironment(home, "locked/node_modules")
+        chmod(home.path("locked/node_modules/pyvenv.cfg"), 0o000)
+        defer { chmod(home.path("locked/node_modules/pyvenv.cfg"), 0o644) }
+        try home.write("Library/Caches/Yarn/blob", bytes: 10_000)
+
+        let (report, byPath) = try await scanAll(home)
+        for folder in cases.map({ "\($0.0)/\($0.2)" }) + ["locked/node_modules"] {
+            let finding = try #require(byPath[home.path(folder)], "\(folder)")
+            #expect(finding.safety == .review, "\(folder)")
+            #expect(finding.explanation.contains("virtual environment"), "\(folder)")
+        }
+        let safe = report.findings.filter { $0.safety == .safe }.map(\.id)
+        #expect(!safe.isEmpty)
+        let results = await testCleaner(home).clean(safe).results
+        #expect(results.allSatisfy { $0.ok }, "\(results)")
+        for folder in cases.map({ "\($0.0)/\($0.2)" }) + ["locked/node_modules"] {
+            #expect(pathExists(home.path(folder + "/lib/python3.12/site-packages/handmade.py")), "\(folder)")
+        }
+    }
+
     /// Environments inside tool folders, ~/Library, or another finding are
     /// left to those.
     @Test func leavesEnvironmentsUnderProtectedAncestorsAlone() throws {
