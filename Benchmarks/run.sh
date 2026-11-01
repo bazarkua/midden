@@ -40,8 +40,9 @@
 #   find         find -x DIR | wc -l
 #
 # Writes results.md (medians, spread, every run's time, the totals check,
-# machine conditions), results.csv (every measured run) and raw/ (each
-# tool's output, errors and rusage). User and system CPU come from
+# machine conditions), conditions.md (the command line, the commits
+# measured, the machine, power and load at the start), results.csv (every
+# measured run) and raw/ (each tool's output, errors and rusage). User and system CPU come from
 # /usr/bin/time -l, which includes children the tool waited for (git, for
 # midden scan); peak RSS is that of the largest single process. The report
 # also lists active system extensions: endpoint security software (such as
@@ -53,6 +54,16 @@ set -o pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
+# The command line as given, for the record, with ~ for the home folder.
+# Arguments with characters the shell would read differently are quoted.
+invocation=
+for word in "$0" "$@"; do
+    case $word in
+        *[!A-Za-z0-9_./,=:+@%-]*|"") word="'$(echo "$word" | sed "s/'/'\\\\''/g")'" ;;
+    esac
+    invocation="$invocation${invocation:+ }$word"
+done
+invocation=$(echo "$invocation" | sed "s|$HOME|~|g")
 all_tools="scan engine read classify walk walk-1 c c-1 c-openat c-readdir c-readdir-1 du find"
 
 runs=7
@@ -226,11 +237,20 @@ filesystem() {
 # MARK: Machine conditions
 
 conditions() {
-    local commit
+    local commit engine harness
     commit=$(cd "$repo" && git rev-parse --short HEAD 2>/dev/null)
     if [ -n "$(cd "$repo" && git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
         commit="$commit (with uncommitted changes)"
     fi
+    # The engine is everything in Sources but the benchmark's entry point;
+    # the harness is Benchmarks/ and that entry point.
+    engine=$(cd "$repo" && git log -1 --format='%h %s' -- Sources \
+        ':(exclude)Sources/MiddenCore/Benchmark.swift' 2>/dev/null)
+    harness=$(cd "$repo" && git log -1 --format='%h %s' -- Benchmarks \
+        Sources/MiddenCore/Benchmark.swift 2>/dev/null)
+    echo "- Command: \`$invocation\`"
+    echo "- Built from commit $commit. Newest commit that changed the engine's sources:" \
+        "$engine. Newest commit that changed the harness: $harness"
     echo "- Mac: $(sysctl -n hw.model), $(sysctl -n machdep.cpu.brand_string)," \
         "$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || echo ?) performance +" \
         "$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo ?) efficiency cores" \
@@ -242,9 +262,13 @@ conditions() {
     extensions=$(systemextensionsctl list 2>/dev/null \
         | awk -F'\t' '/\[activated enabled\]/ { printf "%s%s (%s)", (n++ ? "; " : ""), $5, $4 }')
     echo "- Active system extensions: ${extensions:-none}"
+    echo "- Power: $(pmset -g batt 2>/dev/null | head -1 | sed "s/^Now drawing from //; s/'//g")," \
+        "low power mode $(pmset -g 2>/dev/null | awk '/lowpowermode|powermode/ { print $2; exit }')." \
+        "Thermal: $(pmset -g therm 2>/dev/null | sed 's/^Note: //' | paste -sd ',' - | sed 's/,/, /g')"
+    echo "- Load average at the start: $(uptime | sed 's/.*load averages*: //')." \
+        "Vnode cache: $(sysctl -n kern.maxvnodes) vnodes"
     echo "- Swift: $(swift --version 2>&1 | grep -m1 -o 'Swift version [^ ]*'), swift build -c release." \
         "C: $(clang --version | head -1), clang $c_flags"
-    echo "- Engine commit: $commit"
     echo "- getattrlistbulk buffer: 128 KB per thread, in Midden and in the C scanner"
     echo "- Threads: $threads for midden-bench and the C scanner; midden scan uses its default" \
         "(the core count clamped to 4...12)"
@@ -260,11 +284,16 @@ conditions() {
 echo "dataset,tool,run,wall_s,user_s,sys_s,max_rss_bytes,peak_footprint_bytes,instructions,cycles,items,bytes,errors,load1,status" >"$csv"
 
 {
-    echo "# Midden benchmark"
+    echo "# Machine conditions"
     echo
     echo "$(date '+%Y-%m-%d %H:%M %Z')"
     echo
     conditions
+} >"$out/conditions.md"
+{
+    echo "# Midden benchmark"
+    echo
+    sed '1,2d' "$out/conditions.md"
 } >"$md"
 
 count=${#tool_list[@]}
