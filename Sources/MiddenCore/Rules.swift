@@ -488,6 +488,41 @@ enum RuleCatalog {
                 similar to `brew cleanup -s`; Homebrew downloads them again if it needs them.
                 """,
             action: .removeContents),
+        // Poetry's cache-dir is ~/Library/Caches/pypoetry on macOS, and its
+        // virtualenvs.path defaults to {cache-dir}/virtualenvs (Poetry's
+        // configuration docs). Downloads live in cache/repositories and
+        // artifacts (repository_cache_directory and
+        // artifacts_cache_directory in poetry/config/config.py).
+        Rule(
+            paths: ["Library/Caches/pypoetry"],
+            category: .packageCaches, safety: .info,
+            title: "Poetry", group: "Poetry",
+            explanation: """
+                Poetry's cache folder: the packages it downloaded and, unless you moved them, \
+                the virtual environments of your Poetry projects. Each is listed separately, so \
+                Midden never deletes this folder as a whole.
+                """,
+            action: .manual("Clean the parts listed separately; `poetry cache clear` and `poetry env remove` do the same from Poetry.")),
+        Rule(
+            paths: ["Library/Caches/pypoetry/cache", "Library/Caches/pypoetry/artifacts"],
+            category: .packageCaches, safety: .safe,
+            title: "Poetry downloads ({name})", group: "Poetry",
+            explanation: """
+                Package indexes and packages Poetry downloaded. Poetry downloads them again \
+                when a project installs them.
+                """,
+            action: .removeDirectory),
+        Rule(
+            paths: ["Library/Caches/pypoetry/virtualenvs"],
+            category: .packageCaches, safety: .review,
+            title: "Poetry virtual environments", group: "Poetry",
+            explanation: """
+                The virtual environments Poetry made for your projects, one folder per project. \
+                `poetry install` recreates one from its project's lock file, but packages \
+                installed into it by hand, and files changed inside it, aren't recorded \
+                anywhere and are lost.
+                """,
+            action: .removeDirectory),
         // R packages keep their caches in R_user_dir("<package>", "cache"),
         // here on macOS. renv's is a package library that every renv
         // project links into, so it's never removed with its parent.
