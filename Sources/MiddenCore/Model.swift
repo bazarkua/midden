@@ -117,7 +117,8 @@ public struct SafetyCheck: Codable, Sendable, Hashable {
     /// build folders "projectIdle", "packagesRecorded"; simulators
     /// "simulatorUnavailable". Findings that a running program can depend
     /// on (pnpm dlx packages, browser profiles, Homebrew downloads, SwiftPM
-    /// build products and others) also use "inUse". Empty for checks saved
+    /// build products and others) also use "inUse", and findings that delete
+    /// only part of a folder (Logs, SwiftPM build products) "measured". Empty for checks saved
     /// before ids existed.
     public var id: String
     public var title: String

@@ -11,7 +11,8 @@ package enum Benchmark {
         /// The walker alone: list every folder, add up allocated sizes,
         /// count hard links once. What a C scanner does.
         case walk
-        /// The walk plus classifying every folder (`ScanDelegate`).
+        /// The walk plus classifying every folder (`ScanDelegate`), which
+        /// also measures what Logs and SwiftPM cleaning would delete.
         case classify
         /// The scan's reading phase as `ScanEngine` runs it: classifying
         /// plus the records for the space map.
@@ -58,12 +59,16 @@ package enum Benchmark {
             if !fullDiskAccess, PrivacyProtected.covers(path, accountHome: accountHome) {
                 throw POSIXError(.EPERM)
             }
+            let delegate = ScanDelegate(skipProtected: !fullDiskAccess, accountHome: accountHome)
             let walk = try Walker(
-                root: path,
-                delegate: ScanDelegate(skipProtected: !fullDiskAccess, accountHome: accountHome),
+                root: path, delegate: delegate,
                 threadCount: threadCount,
                 mapFloor: stage == .read ? WalkDefaults.mapFloor : nil
             ).run()
+            // As ScanEngine does right after its walk: take what the walk
+            // collected, which includes what Logs and SwiftPM cleaning would
+            // delete, measured from the walk's own listings.
+            _ = delegate.takeCollected()
             if let rootError = walk.rootError { throw rootError }
             return outcome(items: walk.items, bytes: walk.totalBytes, readErrors: walk.readErrors)
         case .scan:

@@ -84,7 +84,7 @@ import Testing
         let known: Set<String> = [
             "uncommitted", "ignoredFiles", "hiddenChanges", "onBranch", "locked", "inUse", "lastActivity",
             "gitInstalled", "gitReadable", "repositoryExists", "worktreeRecorded", "projectIdle",
-            "packagesRecorded", "simulatorUnavailable",
+            "packagesRecorded", "simulatorUnavailable", "measured",
         ]
         #expect(report.findings.flatMap(\.checks).allSatisfy { known.contains($0.id) })
         #expect(tree.checks.map(\.id) == [

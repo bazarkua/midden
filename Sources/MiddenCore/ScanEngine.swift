@@ -52,7 +52,9 @@ struct ScanEngine {
             walk = try Walker(
                 root: home, delegate: delegate,
                 threadCount: options.threadCount ?? WalkDefaults.threadCount,
-                mapFloor: WalkDefaults.mapFloor
+                mapFloor: WalkDefaults.mapFloor,
+                threads: options.walkerThreads ?? .process,
+                lister: options.lister ?? { path, reader throws(POSIXError) in try reader.listing(atPath: path) }
             ).run(cancellation: cancellation) { estimator.reading($0) }
         } catch {
             throw MiddenError.unreadable(path: home, code: error.code.rawValue)
@@ -100,14 +102,13 @@ struct ScanEngine {
             var total = remainder?.bytes ?? directory.total
             var children = remainder?.children ?? directory.children
             // A finding that deletes only some of its contents shows only
-            // those.
-            var policy: ContentsPolicy?
-            if case .rule(let rule) = match { policy = rule.rule.contents }
-            if case .buildFolder(let build) = match { policy = build.kind.contents }
-            if let policy {
-                let survey = ContentsSurvey.measure(policy, directory.path, now: now)
-                total = survey.bytes
-                children = survey.children
+            // those, as measured during the walk.
+            var measure: ContentsMeasure?
+            if match.contentsPolicy != nil {
+                let measured = collected.contents[directory.path] ?? .unknown
+                total = measured.bytes
+                children = measured.children
+                measure = measured
             }
             if directory.path == devicesFolder {
                 for child in directory.children where child.isDirectory {
@@ -119,12 +120,16 @@ struct ScanEngine {
             switch match {
             case .rule(let rule):
                 if rule.rule.checkInUse { inUseChecks.append((findings.count, rule.rule.inUseBy)) }
-                findings.append(Findings.rule(rule, path: directory.path, bytes: total, breakdown: breakdown))
+                var finding = Findings.rule(rule, path: directory.path, bytes: total, breakdown: breakdown)
+                if let measure { finding = Findings.measured(finding, measure) }
+                findings.append(finding)
             case .buildFolder(let build):
                 if build.kind.checkInUse { inUseChecks.append((findings.count, .folder)) }
-                findings.append(Findings.buildFolder(
+                var finding = Findings.buildFolder(
                     build, path: directory.path, bytes: total, breakdown: breakdown, now: now,
-                    idleWindow: options.projectIdleWindow))
+                    idleWindow: options.projectIdleWindow)
+                if let measure { finding = Findings.measured(finding, measure) }
+                findings.append(finding)
             case .worktree(let worktree):
                 worktrees.append((worktree, total, breakdown))
             }

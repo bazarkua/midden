@@ -48,6 +48,10 @@ struct CleanEngine {
     /// The name of a running app matching a hint, if any. Replaceable so
     /// tests don't depend on the apps open on the Mac running them.
     var runningApp: @Sendable (AppHint) -> String? = { Apps.running($0) }
+    /// How a partly-emptied folder is listed to measure it, and how long a
+    /// listing may stall; replaceable in tests.
+    var contentsLister: ContentsSurvey.Lister = { path, reader throws(POSIXError) in try reader.listing(atPath: path) }
+    var contentsStallTimeout: TimeInterval = WalkDefaults.stallTimeout
     /// Reads the user's processes for "not in use" checks.
     var processUsage: @Sendable () -> ProcessUsage = { ProcessUsage.current() }
 
@@ -211,22 +215,28 @@ struct CleanEngine {
                 }
                 // Only what the policy deletes, measured now.
                 var breakdown: [Slice] = []
+                var measure: ContentsMeasure?
                 if let policy = rule.rule.contents {
-                    let survey = ContentsSurvey.measure(policy, path, now: Date())
-                    bytes = survey.bytes
-                    breakdown = Findings.breakdown(total: bytes, children: survey.children)
+                    let measured = measureContents(policy, path)
+                    bytes = measured.bytes
+                    breakdown = Findings.breakdown(total: bytes, children: measured.children)
+                    measure = measured
                 }
                 var finding = Findings.rule(rule, path: path, bytes: bytes, breakdown: breakdown)
+                if let measure { finding = Findings.measured(finding, measure) }
                 if rule.rule.checkInUse { finding = Findings.checkingUse(finding, processUsage(), by: rule.rule.inUseBy) }
                 return .success((finding, rule.rule.contents))
             case .buildFolder(let build):
                 var breakdown: [Slice] = []
+                var measure: ContentsMeasure?
                 if let policy = build.kind.contents {
-                    let survey = ContentsSurvey.measure(policy, path, now: Date())
-                    bytes = survey.bytes
-                    breakdown = Findings.breakdown(total: bytes, children: survey.children)
+                    let measured = measureContents(policy, path)
+                    bytes = measured.bytes
+                    breakdown = Findings.breakdown(total: bytes, children: measured.children)
+                    measure = measured
                 }
                 var finding = Findings.buildFolder(build, path: path, bytes: bytes, breakdown: breakdown)
+                if let measure { finding = Findings.measured(finding, measure) }
                 if build.kind.checkInUse { finding = Findings.checkingUse(finding, processUsage()) }
                 return .success((finding, build.kind.contents))
             case .worktree(let worktree):
@@ -234,6 +244,11 @@ struct CleanEngine {
                 return .success((Findings.worktree(worktree, audit: audit, home: home, bytes: bytes), nil))
             }
         }
+    }
+
+    /// What a contents policy would delete under `path` now.
+    private func measureContents(_ policy: ContentsPolicy, _ path: String) -> ContentsMeasure {
+        ContentsSurvey.measure(policy, path, now: Date(), stallTimeout: contentsStallTimeout, lister: contentsLister)
     }
 
     /// Outside home, only a linked worktree of a repository inside home is

@@ -204,8 +204,18 @@ private func setModified(_ path: String, _ seconds: Double) throws {
             }
             return listing
         }
-        let survey = try #require(policy.survey(home.path(Self.logs)))
-        #expect(survey.files == 1)
+        let measure = ContentsSurvey.measure(.agedFiles(minimumAge: 7 * 86_400), home.path(Self.logs), now: Date()) {
+            path, reader throws(POSIXError) in
+            var listing = try reader.listing(atPath: path)
+            listing.entries = listing.entries.map { entry in
+                var entry = entry
+                if entry.name == "mnt" { entry.device &+= 1 }
+                return entry
+            }
+            return listing
+        }
+        #expect(measure.bytes == fileBytes(beside))
+        #expect(measure.isComplete)
         let removed = try #require(policy.remove(home.path(Self.logs), home: home.path))
         #expect(removed.files == 1)
         #expect(pathExists(mounted))
@@ -232,9 +242,18 @@ private func setModified(_ path: String, _ seconds: Double) throws {
             }
             return listing
         }
-        let survey = try #require(policy.survey(root))
-        #expect(survey.files == 3)
-        #expect(survey.unreadableFolders == 1)
+        let measure = ContentsSurvey.measure(.agedFiles(minimumAge: 7 * 86_400), root, now: Date()) {
+            path, reader throws(POSIXError) in
+            var listing = try reader.listing(atPath: path)
+            if listing.entries.contains(where: { $0.name.hasPrefix("old-") }) {
+                let files = listing.entries.filter { $0.name.hasPrefix("old-") }.sorted { $0.name < $1.name }
+                listing.entries = Array(files.prefix(3))
+                listing.markIncomplete(POSIXError(.EIO))
+            }
+            return listing
+        }
+        #expect(measure.bytes == paths.prefix(3).reduce(0) { $0 + fileBytes($1) })
+        #expect(measure.unread == 1)
         let removed = try #require(policy.remove(root, home: home.path))
         #expect(removed.files == 3)
         #expect(removed.unreadableFolders == 1)

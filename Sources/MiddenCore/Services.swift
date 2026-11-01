@@ -27,6 +27,10 @@ public struct ScanOptions: Sendable {
     var privacyHome: String?
     /// Lists the user's processes for "not in use" checks; nil reads them.
     var processUsage: (@Sendable () -> ProcessUsage)?
+    /// Replaces how the walk lists a folder, and the slots its threads take;
+    /// for tests that block or break a listing.
+    var lister: ContentsSurvey.Lister?
+    var walkerThreads: WalkerThreads?
 
     public init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,

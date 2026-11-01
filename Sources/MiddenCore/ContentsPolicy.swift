@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// How the cleaner empties a folder whose rule doesn't allow removing all
 /// of its contents. Internal to the engine: the public action stays
@@ -14,32 +15,143 @@ enum ContentsPolicy: Sendable, Hashable {
     case allExcept(Set<String>)
 }
 
+extension DirectoryMatch {
+    /// How cleaning empties this folder, when not by removing all of it.
+    var contentsPolicy: ContentsPolicy? {
+        switch self {
+        case .rule(let match): match.rule.contents
+        case .buildFolder(let match): match.kind.contents
+        case .worktree: nil
+        }
+    }
+}
+
+/// What a contents policy would delete under its folder, and whether every
+/// folder inside was read to say so.
+struct ContentsMeasure: Sendable {
+    var bytes: Int64
+    /// Those bytes per entry directly inside the folder, for the breakdown.
+    var children: [SizedDirectory<DirectoryMatch>.Child]
+    /// Folders inside that weren't listed, or only partly: their share is
+    /// missing from `bytes`.
+    var unread: Int
+
+    var isComplete: Bool { unread == 0 }
+
+    /// Nothing could be read.
+    static let unknown = ContentsMeasure(bytes: 0, children: [], unread: 1)
+}
+
+/// Adds up what a contents policy would delete from listings a walk makes
+/// anyway: the scan's own walk, under its admission, watchdog and
+/// cancellation, or the cleaner's measuring walk. No folder is listed just
+/// for this. Every folder inside that the walk should have listed is
+/// counted, and every one it listed, so one it gave up, couldn't open or
+/// read only partly leaves the measure visibly incomplete.
+final class ContentsTally: Sendable {
+    let root: String
+    let policy: ContentsPolicy
+    /// Seconds since 1970 that file ages are measured from.
+    let now: Double
+    /// The walk's device: it lists no folder on another one.
+    let device: Int32
+
+    private struct State {
+        var bytes: Int64 = 0
+        var children: [String: (bytes: Int64, isDirectory: Bool)] = [:]
+        /// Folders inside the walk will list, and those it did.
+        var expected = 0
+        var visited = 0
+        /// Folders listed only partly, or on another device where the
+        /// policy needs them.
+        var partial = 0
+        /// Files with several links, counted once.
+        var linked: Set<UInt64> = []
+    }
+
+    private let state = Mutex(State())
+
+    init(root: String, policy: ContentsPolicy, now: Date, device: Int32) {
+        self.root = root
+        self.policy = policy
+        self.now = now.timeIntervalSince1970
+        self.device = device
+    }
+
+    /// Adds one listed folder: the policy's folder itself, or one inside it.
+    /// - Parameter skipped: subfolders the walk won't list (unreadable ones).
+    func add(path: String, entries: [DirectoryEntry], isComplete: Bool, skipped: [String] = []) {
+        let isRoot = path == root
+        let top = isRoot ? nil : path.dropFirst(root.count + 1).split(separator: "/").first.map(String.init)
+        state.withLock { state in
+            func count(_ name: String, _ bytes: Int64, directory: Bool) {
+                state.bytes += bytes
+                state.children[name, default: (0, directory)].bytes += bytes
+            }
+            func listsSubfolder(_ entry: DirectoryEntry) -> Bool {
+                entry.kind == .directory && entry.device == device && !skipped.contains(entry.name)
+            }
+            switch policy {
+            case .agedFiles(let minimumAge):
+                for entry in entries {
+                    if listsSubfolder(entry) { state.expected += 1 }
+                    guard entry.kind == .file, entry.linkCount == 1, entry.modified > 0,
+                        now - entry.modified >= minimumAge
+                    else { continue }
+                    count(top ?? entry.name, entry.allocatedSize, directory: top != nil)
+                }
+            case .allExcept(let kept):
+                if let top, kept.contains(top) { return }  // Kept: never measured.
+                for entry in entries {
+                    if isRoot, kept.contains(entry.name) { continue }
+                    let name = top ?? entry.name
+                    if entry.kind == .directory {
+                        // Removed with everything in it, so a folder the
+                        // walk won't enter leaves the measure incomplete.
+                        if listsSubfolder(entry) { state.expected += 1 } else { state.partial += 1 }
+                        count(name, entry.allocatedSize, directory: true)
+                    } else {
+                        if entry.linkCount > 1, !state.linked.insert(entry.inode).inserted { continue }
+                        count(name, entry.allocatedSize, directory: top != nil)
+                    }
+                }
+            }
+            if !isRoot { state.visited += 1 }
+            if !isComplete { state.partial += 1 }
+        }
+    }
+
+    var measure: ContentsMeasure {
+        state.withLock { state in
+            ContentsMeasure(
+                bytes: state.bytes,
+                children: state.children.map { .init(name: $0.key, bytes: $0.value.bytes, isDirectory: $0.value.isDirectory) },
+                unread: max(state.expected - state.visited, 0) + state.partial)
+        }
+    }
+}
+
 /// Measures and applies a contents policy, for the scanner and the cleaner.
 enum ContentsSurvey {
-    /// What the policy would delete under `path`: its bytes, and those
-    /// bytes per entry directly inside, for the breakdown.
+    /// A listing function with the walker's signature.
+    typealias Lister = @Sendable (_ path: String, _ reader: DirectoryReader) throws(POSIXError) -> DirectoryListing
+
+    /// What the policy would delete under `path` now, measured by a walk
+    /// with the walker's watchdog and thread admission, for the cleaner.
+    /// (The scan measures during its own walk instead.)
     static func measure(
-        _ policy: ContentsPolicy, _ path: String, now: Date
-    ) -> (bytes: Int64, children: [SizedDirectory<DirectoryMatch>.Child]) {
-        switch policy {
-        case .agedFiles(let minimumAge):
-            guard let survey = AgedFiles(minimumAge: minimumAge, now: now).survey(path) else { return (0, []) }
-            return (survey.bytes, survey.byChild.map { .init(name: $0.key, bytes: $0.value, isDirectory: true) })
-        case .allExcept(let kept):
-            guard let entries = try? DirectoryReader().entries(atPath: path) else { return (0, []) }
-            var children: [SizedDirectory<DirectoryMatch>.Child] = []
-            for entry in entries where !kept.contains(entry.name) {
-                var bytes = entry.allocatedSize
-                if entry.kind == .directory {
-                    bytes = (try? Walker(root: path + "/" + entry.name, delegate: SizeOnly()).run().totalBytes) ?? bytes
-                } else if entry.kind == .symlink {
-                    var info = stat()
-                    bytes = lstat(path + "/" + entry.name, &info) == 0 ? Int64(info.st_blocks) * 512 : 0
-                }
-                children.append(.init(name: entry.name, bytes: bytes, isDirectory: entry.kind == .directory))
-            }
-            return (children.reduce(0) { $0 + $1.bytes }, children)
-        }
+        _ policy: ContentsPolicy, _ path: String, now: Date,
+        stallTimeout: TimeInterval = WalkDefaults.stallTimeout,
+        lister: @escaping Lister = { path, reader throws(POSIXError) in try reader.listing(atPath: path) }
+    ) -> ContentsMeasure {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return .unknown }
+        let tally = ContentsTally(root: path, policy: policy, now: now, device: info.st_dev)
+        let walker = Walker(
+            root: path, delegate: TallyDelegate(tally: tally), threadCount: 2, stallTimeout: stallTimeout,
+            lister: lister)
+        guard let walk = try? walker.run(), walk.rootError == nil else { return .unknown }
+        return tally.measure
     }
 
     /// Deletes what the policy allows. Returns what went wrong, if
@@ -140,8 +252,8 @@ struct TreeRemoval {
     }
 }
 
-/// Regular files old enough to delete under a folder, found and deleted
-/// through file descriptors: each folder is opened relative to its parent
+/// Deletes the regular files old enough under a folder, through file
+/// descriptors: each folder is opened relative to its parent
 /// with O_NOFOLLOW, so a symlink is never followed, and nothing on another
 /// device (a disk mounted inside) is entered.
 struct AgedFiles {
@@ -155,7 +267,7 @@ struct AgedFiles {
 
     /// What a pass found or did.
     struct Outcome: Sendable, Hashable {
-        /// Eligible files: found by a survey, deleted by `remove`.
+        /// Eligible files deleted.
         var files = 0
         /// Their allocated bytes.
         var bytes: Int64 = 0
@@ -179,18 +291,12 @@ struct AgedFiles {
         return age >= minimumAge
     }
 
-    /// Finds the eligible files without changing anything.
-    func survey(_ root: String) -> Outcome? {
-        guard let fd = try? DirectoryReader.openDirectory(root) else { return nil }
-        return walk(fd, root: root, delete: false)
-    }
-
     /// Deletes the eligible files under `root`, checking each again right
     /// before. `root` is opened from `home` one component at a time with
     /// O_NOFOLLOW, so no symlink at or above it is followed.
     func remove(_ root: String, home: String) -> Outcome? {
         guard let fd = Self.openBeneath(home, root) else { return nil }
-        return walk(fd, root: root, delete: true)
+        return walk(fd, root: root)
     }
 
     /// Opens `path`, which must be inside `home`, walking down from `home`
@@ -211,7 +317,7 @@ struct AgedFiles {
 
     /// Walks from an open root, which it closes. Nil when the root isn't a
     /// folder.
-    private func walk(_ rootFD: Int32, root: String, delete: Bool) -> Outcome? {
+    private func walk(_ rootFD: Int32, root: String) -> Outcome? {
         var info = stat()
         guard fstat(rootFD, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
             close(rootFD)
@@ -256,31 +362,25 @@ struct AgedFiles {
                         kind: .file, links: UInt64(entry.linkCount), device: Int64(entry.device),
                         rootDevice: device, modified: entry.modified)
                     else { continue }
-                    if delete {
-                        // Checked again through the descriptor: still the
-                        // same regular file, still old enough.
-                        var current = stat()
-                        guard fstatat(fd, entry.name, &current, AT_SYMLINK_NOFOLLOW) == 0,
-                            current.st_ino == entry.inode,
-                            isEligible(
-                                kind: current.st_mode & S_IFMT == S_IFREG ? .file : .other,
-                                links: UInt64(current.st_nlink), device: Int64(current.st_dev),
-                                rootDevice: device,
-                                modified: Double(current.st_mtimespec.tv_sec))
-                        else { continue }
-                        guard unlinkat(fd, entry.name, 0) == 0 else {
-                            if errno != ENOENT { outcome.failures.append(path + "/" + entry.name) }
-                            continue
-                        }
-                        let bytes = Int64(current.st_blocks) * 512
-                        outcome.files += 1
-                        outcome.bytes += bytes
-                        outcome.byChild[child, default: 0] += bytes
-                    } else {
-                        outcome.files += 1
-                        outcome.bytes += entry.allocatedSize
-                        outcome.byChild[child, default: 0] += entry.allocatedSize
+                    // Checked again through the descriptor: still the same
+                    // regular file, still old enough.
+                    var current = stat()
+                    guard fstatat(fd, entry.name, &current, AT_SYMLINK_NOFOLLOW) == 0,
+                        current.st_ino == entry.inode,
+                        isEligible(
+                            kind: current.st_mode & S_IFMT == S_IFREG ? .file : .other,
+                            links: UInt64(current.st_nlink), device: Int64(current.st_dev),
+                            rootDevice: device,
+                            modified: Double(current.st_mtimespec.tv_sec))
+                    else { continue }
+                    guard unlinkat(fd, entry.name, 0) == 0 else {
+                        if errno != ENOENT { outcome.failures.append(path + "/" + entry.name) }
+                        continue
                     }
+                    let bytes = Int64(current.st_blocks) * 512
+                    outcome.files += 1
+                    outcome.bytes += bytes
+                    outcome.byChild[child, default: 0] += bytes
                 case .symlink, .other:
                     continue
                 }
@@ -288,5 +388,17 @@ struct AgedFiles {
         }
         visit(rootFD, path: root, top: nil)
         return outcome
+    }
+}
+
+/// Feeds every folder a measuring walk lists to a tally.
+private struct TallyDelegate: WalkDelegate {
+    let tally: ContentsTally
+
+    func rootContext() {}
+
+    func visit(_ directory: VisitedDirectory<Void>) -> Visit<Void, Never> {
+        tally.add(path: directory.path, entries: directory.entries, isComplete: directory.isComplete)
+        return Visit(mark: nil, childContext: ())
     }
 }

@@ -52,6 +52,21 @@ enum Findings {
             breakdown: breakdown)
     }
 
+    /// Adds what measuring a partly-emptied folder found: whether every
+    /// folder inside was read. One that wasn't means the size can be too
+    /// low, and Midden doesn't pick the item for "Clean safe items".
+    static func measured(_ finding: Finding, _ measure: ContentsMeasure) -> Finding {
+        var finding = finding
+        let unread = measure.unread
+        finding.checks.append(SafetyCheck(
+            id: "measured", title: "Read completely", passed: measure.isComplete,
+            detail: measure.isComplete
+                ? "Every folder inside was read."
+                : "Midden couldn't read \(unread) \(unread == 1 ? "folder" : "folders") inside, so the size shown can be too low."))
+        if !measure.isComplete, finding.safety == .safe { finding.safety = .review }
+        return finding
+    }
+
     /// Adds the "not in use" check to a finding whose rule asks for it. A
     /// program that uses it, or a process listing that isn't complete,
     /// makes it Info: Midden doesn't delete it until that's settled.
