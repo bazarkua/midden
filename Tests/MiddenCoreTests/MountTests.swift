@@ -7,6 +7,18 @@ private func exists(_ path: String) -> Bool {
     return lstat(path, &info) == 0
 }
 
+/// Tests that attach real disk images run only on request. macOS treats a
+/// mounted image as a removable volume, and the first access to one asks
+/// the user "would like to access files on a removable volume" on behalf of
+/// the terminal: a plain `swift test` must never raise a permission prompt.
+/// Run them with MIDDEN_MOUNT_TESTS=1, from a terminal that has access to
+/// removable volumes (System Settings, Privacy & Security, Files and
+/// Folders). The mount guard's default coverage is the injected-table tests
+/// below.
+private let realDiskImagesRequested =
+    ProcessInfo.processInfo.environment["MIDDEN_MOUNT_TESTS"] != nil
+    && FileManager.default.isExecutableFile(atPath: "/usr/bin/hdiutil")
+
 /// A 20 MB APFS disk image attached at a folder, detached when released.
 private final class MountedDiskImage {
     let mountPoint: String
@@ -21,13 +33,15 @@ private final class MountedDiskImage {
     }
 
     deinit {
-        _ = try? Self.hdiutil(["detach", "-force", mountPoint, "-quiet"])
+        // Also when the test failed or access was denied: nothing stays
+        // mounted, and a stuck detach gives up after its deadline.
+        _ = try? Self.hdiutil(["detach", "-force", mountPoint, "-quiet"], timeout: 30)
     }
 
-    /// With a deadline: an hdiutil call once hung for minutes while another
-    /// test run on the same Mac was making disk images too.
-    private static func hdiutil(_ arguments: [String]) throws {
-        let result = Command.run(["/usr/bin/hdiutil"] + arguments, timeout: 60)
+    /// With a deadline: an hdiutil call once hung for minutes, possibly
+    /// waiting on the removable-volume permission prompt nobody answered.
+    private static func hdiutil(_ arguments: [String], timeout: TimeInterval = 60) throws {
+        let result = Command.run(["/usr/bin/hdiutil"] + arguments, timeout: timeout)
         guard result.succeeded else {
             throw ShellError(command: "hdiutil \(arguments.joined(separator: " ")): \(result.message)", status: result.status)
         }
@@ -48,7 +62,7 @@ private final class MountedDiskImage {
     /// FileManager.removeItem descends into a disk mounted inside the
     /// folder it removes, empties it, and only then fails with EBUSY on
     /// the mount point, leaving the folder half deleted.
-    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/usr/bin/hdiutil")))
+    @Test(.enabled(if: realDiskImagesRequested, "Attaches real disk images: run with MIDDEN_MOUNT_TESTS=1 from a terminal with access to removable volumes"))
     func refusesAFolderWithADiskMountedInside() async throws {
         let home = try TempDir("home")
         let images = try TempDir("images")
@@ -83,7 +97,7 @@ private final class MountedDiskImage {
 
     /// Attached through another spelling of the same folder (/var is a
     /// symlink to /private/var): still found, still refused.
-    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/usr/bin/hdiutil")))
+    @Test(.enabled(if: realDiskImagesRequested, "Attaches real disk images: run with MIDDEN_MOUNT_TESTS=1 from a terminal with access to removable volumes"))
     func refusesAMountAttachedThroughAnotherSpelling() async throws {
         let home = try TempDir("home")
         let images = try TempDir("images")

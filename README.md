@@ -153,7 +153,7 @@ Midden knows only the leftovers it has rules for. If a tool on your Mac leaves d
 
 1. Add a rule to [`Sources/MiddenCore/Rules.swift`](Sources/MiddenCore/Rules.swift). The explanation must say what the folder is and what deleting it costs.
 2. Add a row for it to the rule table in [`Tests/MiddenCoreTests/RuleTests.swift`](Tests/MiddenCoreTests/RuleTests.swift).
-3. Run `swift test`.
+3. Run `swift test`. It never asks for a permission. Two tests that attach real disk images run only with `MIDDEN_MOUNT_TESTS=1`, and need your terminal to have access to removable volumes (System Settings, Privacy & Security, Files and Folders).
 
 Bug reports and questions go to [Issues](https://github.com/bazarkua/midden/issues).
 
