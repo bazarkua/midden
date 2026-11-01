@@ -96,6 +96,56 @@ import Testing
     }
 
     /// The ledger is read again when cleaning, and VS Code must be quit.
+    /// A profiles folder Midden can't read may list any extension, so
+    /// nothing is eligible: the scan offers no old version, and cleaning
+    /// keeps the one that unreadable profile lists.
+    @Test func anUnreadableProfilesFolderMakesNothingEligible() async throws {
+        let home = try makeHome()
+        let profiles = home.path("Library/Application Support/Code/User/profiles")
+        chmod(profiles, 0o000)
+        defer { chmod(profiles, 0o755) }
+        let byPath = try await scanFindings(home, processes: ProcessUsage(processes: []))
+        #expect(byPath.keys.filter { $0.hasPrefix(home.path(Self.extensions) + "/") }.isEmpty)
+
+        let listed = home.path("\(Self.extensions)/acme.profiled-1.0.0")
+        let results = await testCleaner(home).clean(
+            [listed, home.path("\(Self.extensions)/eamodio.gitlens-17.3.0")]).results
+        #expect(results.allSatisfy { !$0.ok }, "\(results)")
+        chmod(profiles, 0o755)
+        #expect(pathExists(listed + "/package.json"))
+    }
+
+    /// The profiles folder fails to list (EIO), or lists only partly: the
+    /// inventory is unknown, so nothing is eligible.
+    @Test func aFailedOrPartialProfileListingMakesNothingEligible() throws {
+        let home = try makeHome()
+        let extensions = home.path(Self.extensions)
+        let entries = try DirectoryReader().entries(atPath: extensions)
+        let failing: ObsoleteExtensions.Lister = { _ throws(POSIXError) in throw POSIXError(.EIO) }
+        #expect(ObsoleteExtensions.eligible(extensions: extensions, entries: entries, home: home.path, list: failing).isEmpty)
+        let partial: ObsoleteExtensions.Lister = { path throws(POSIXError) in
+            var listing = try DirectoryReader().listing(atPath: path)
+            listing.entries = []
+            listing.markIncomplete(POSIXError(.EIO))
+            return listing
+        }
+        #expect(ObsoleteExtensions.eligible(extensions: extensions, entries: entries, home: home.path, list: partial).isEmpty)
+        // The same folder listed completely: the usual answer.
+        #expect(ObsoleteExtensions.eligible(extensions: extensions, entries: entries, home: home.path)
+            == ["eamodio.gitlens-17.3.0", "anthropic.claude-code-2.1.160-darwin-arm64"])
+    }
+
+    /// No profiles folder at all is confirmed absence: VS Code has only its
+    /// default profile.
+    @Test func noProfilesFolderStillWorks() throws {
+        let home = try makeHome()
+        try FileManager.default.removeItem(atPath: home.path("Library/Application Support/Code/User/profiles"))
+        let extensions = home.path(Self.extensions)
+        let entries = try DirectoryReader().entries(atPath: extensions)
+        #expect(ObsoleteExtensions.eligible(extensions: extensions, entries: entries, home: home.path)
+            == ["eamodio.gitlens-17.3.0", "anthropic.claude-code-2.1.160-darwin-arm64", "acme.profiled-1.0.0"])
+    }
+
     @Test func checksTheLedgerAndVSCodeAgainWhenCleaning() async throws {
         let home = try makeHome()
         let target = home.path("\(Self.extensions)/eamodio.gitlens-17.3.0")

@@ -18,11 +18,19 @@ import Foundation
 /// can't read makes nothing eligible. Only VS Code's own folder is checked:
 /// editors built from VS Code's code aren't assumed to behave the same.
 enum ObsoleteExtensions {
+    /// Lists a folder. Replaceable in tests to make a listing fail or come
+    /// back incomplete.
+    typealias Lister = (String) throws(POSIXError) -> DirectoryListing
+
     /// Folder names under `extensions` that are eligible now.
-    static func eligible(extensions: String, entries: [DirectoryEntry], home: String) -> Set<String> {
+    static func eligible(
+        extensions: String, entries: [DirectoryEntry], home: String,
+        list: Lister = { path throws(POSIXError) in try DirectoryReader().listing(atPath: path) }
+    ) -> Set<String> {
         guard let ledger = readJSON(extensions + "/.obsolete") as? [String: Any] else { return [] }
         let marked = Set(ledger.compactMap { key, value in isTrue(value) ? key : nil })
-        guard !marked.isEmpty, let listed = listedByProfiles(extensions: extensions, home: home) else { return [] }
+        guard !marked.isEmpty, let listed = listedByProfiles(extensions: extensions, home: home, list: list)
+        else { return [] }
         var eligible: Set<String> = []
         for entry in entries where entry.kind == .directory && !listed.contains(entry.name) {
             guard let manifest = readJSON(extensions + "/" + entry.name + "/package.json") as? [String: Any],
@@ -47,13 +55,30 @@ enum ObsoleteExtensions {
         return key
     }
 
-    /// Folder names any VS Code profile still lists, or nil when a profile
-    /// manifest exists but can't be read.
-    static func listedByProfiles(extensions: String, home: String) -> Set<String>? {
+    /// Folder names any VS Code profile still lists, or nil when that can't
+    /// be known: the profiles folder can't be listed completely, or a
+    /// profile manifest exists but can't be read. Only a profiles folder
+    /// that is confirmed absent (ENOENT) counts as no profiles.
+    static func listedByProfiles(extensions: String, home: String, list: Lister) -> Set<String>? {
         let user = home + "/Library/Application Support/Code/User"
         var manifests = [extensions + "/extensions.json", user + "/extensions.json"]
-        if let profiles = try? FileManager.default.contentsOfDirectory(atPath: user + "/profiles") {
-            manifests += profiles.map { user + "/profiles/" + $0 + "/extensions.json" }
+        let profiles = user + "/profiles"
+        var folder = stat()
+        if lstat(profiles, &folder) == 0 {
+            guard folder.st_mode & S_IFMT == S_IFDIR else { return nil }
+            let listing: DirectoryListing
+            do {
+                listing = try list(profiles)
+            } catch {
+                return nil
+            }
+            guard listing.isComplete else { return nil }
+            // A profile is a folder; a symlink may lead to one.
+            for entry in listing.entries where entry.kind == .directory || entry.kind == .symlink {
+                manifests.append(profiles + "/" + entry.name + "/extensions.json")
+            }
+        } else if errno != ENOENT {
+            return nil
         }
         var listed: Set<String> = []
         for path in manifests {
