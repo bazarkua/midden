@@ -11,6 +11,9 @@ struct ProcessDirectories: Sendable {
         var pid: Int32
         var command: String
         var directory: String
+        /// git's file-system monitor (`git fsmonitor--daemon`), which
+        /// `core.fsmonitor=true` starts and leaves running in a worktree.
+        var isGitFileMonitor = false
     }
 
     /// A process as the system lists it.
@@ -37,7 +40,8 @@ struct ProcessDirectories: Sendable {
                 processes: [],
                 failure: "the system wouldn't list processes (\(String(cString: strerror(error.code.rawValue))))")
         case .success(let entries):
-            return collect(entries, user: getuid(), workingDirectory: workingDirectory)
+            return collect(
+                entries, user: getuid(), workingDirectory: workingDirectory, arguments: processArguments)
         }
     }
 
@@ -45,14 +49,21 @@ struct ProcessDirectories: Sendable {
     /// process that exited meanwhile (ESRCH) is fine; any other error means
     /// the listing is incomplete.
     static func collect(
-        _ entries: [Entry], user: uid_t, workingDirectory: (Int32) -> Result<String, POSIXError>
+        _ entries: [Entry], user: uid_t, workingDirectory: (Int32) -> Result<String, POSIXError>,
+        arguments: (Int32) -> [String]? = { _ in nil }
     ) -> ProcessDirectories {
         var processes: [Process] = []
         var failure: String?
         for entry in entries where entry.uid == user && entry.pid > 0 {
             switch workingDirectory(entry.pid) {
             case .success(let directory):
-                processes.append(Process(pid: entry.pid, command: entry.command, directory: directory))
+                // Recognized precisely: a git process whose arguments include
+                // fsmonitor--daemon. Arguments that can't be read count as
+                // any other program.
+                let monitor = entry.command == "git"
+                    && (arguments(entry.pid)?.contains("fsmonitor--daemon") ?? false)
+                processes.append(Process(
+                    pid: entry.pid, command: entry.command, directory: directory, isGitFileMonitor: monitor))
             case .failure(let error) where error.code == .ESRCH:
                 continue
             case .failure(let error):
@@ -87,6 +98,33 @@ struct ProcessDirectories: Sendable {
             guard errno == ENOMEM else { return .failure(POSIXError(errno)) }
         }
         return .failure(POSIXError(.ENOMEM))
+    }
+
+    /// A process's arguments, from sysctl(KERN_PROCARGS2): argc, then the
+    /// executable's path and padding, then argc NUL-terminated arguments.
+    static func processArguments(_ pid: Int32) -> [String]? {
+        var maximum: Int32 = 0
+        var length = MemoryLayout<Int32>.size
+        var limit: [Int32] = [CTL_KERN, KERN_ARGMAX]
+        guard sysctl(&limit, 2, &maximum, &length, nil, 0) == 0, maximum > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: Int(maximum))
+        var size = buffer.count
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else {
+            return nil
+        }
+        let count = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        var index = MemoryLayout<Int32>.size
+        while index < size, buffer[index] != 0 { index += 1 }  // The executable's path.
+        while index < size, buffer[index] == 0 { index += 1 }  // Padding.
+        var arguments: [String] = []
+        while arguments.count < count, index < size {
+            let start = index
+            while index < size, buffer[index] != 0 { index += 1 }
+            arguments.append(String(decoding: buffer[start..<index], as: UTF8.self))
+            index += 1
+        }
+        return arguments
     }
 
     static func workingDirectory(_ pid: Int32) -> Result<String, POSIXError> {

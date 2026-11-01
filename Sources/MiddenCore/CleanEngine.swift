@@ -201,6 +201,13 @@ struct CleanEngine {
             }
             return nil
         case .run(let arguments):
+            if finding.category == .worktrees {
+                // git's file watcher, if one runs for this worktree. It fails
+                // harmlessly when none does or git lacks the feature.
+                _ = Command.run(
+                    ["git", "-C", finding.path, "fsmonitor--daemon", "stop"],
+                    environment: Command.quietGit, timeout: 30)
+            }
             let result = Command.run(
                 arguments, environment: arguments.first == "git" ? Command.quietGit : [:], timeout: 600)
             guard result.succeeded else {

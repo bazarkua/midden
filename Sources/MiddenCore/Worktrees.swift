@@ -141,7 +141,10 @@ struct WorktreeAuditor: Sendable {
             checks.append(SafetyCheck(id: "locked", title: "Not locked", passed: true, detail: "Nobody locked it with `git worktree lock`."))
         }
 
-        let users = processes.inside(path)
+        // git's own file watcher isn't a program using the worktree: the
+        // cleaner stops it before removing. Anything else counts.
+        let watchers = processes.inside(path).filter(\.isGitFileMonitor)
+        let users = processes.inside(path).filter { !$0.isGitFileMonitor }
         if users.isEmpty, let failure = processes.failure {
             // Not seeing a program here proves nothing if the listing is incomplete.
             checks.append(SafetyCheck(
@@ -151,7 +154,9 @@ struct WorktreeAuditor: Sendable {
         } else if users.isEmpty {
             checks.append(SafetyCheck(
                 id: "inUse", title: "Not in use", passed: true,
-                detail: "No running program has its working directory in it."))
+                detail: watchers.isEmpty
+                    ? "No running program has its working directory in it."
+                    : "No program is working in it. git's file watcher is running here; Midden stops it before removing."))
         } else {
             let names = users.prefix(3).map { "\($0.command) (pid \($0.pid))" }.joined(separator: ", ")
                 + (users.count > 3 ? " and others" : "")
