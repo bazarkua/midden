@@ -83,6 +83,9 @@ struct CleanEngine {
         if case .manual(let instructions) = finding.action {
             return refuse("Midden doesn't delete this itself. \(instructions)", finding)
         }
+        if let refusal = volumeRefusal(finding) {
+            return refuse(refusal, finding)
+        }
         if let app = finding.app, let running = Apps.running(app) {
             return refuse("\(running) is running. Quit it first.", finding)
         }
@@ -176,8 +179,46 @@ struct CleanEngine {
         return .success(Findings.simulator(device, path: path, bytes: bytes))
     }
 
+    /// Why removing `path` could reach another disk, from the list of mount
+    /// points, or nil. FileManager's removeItem descends into a disk mounted
+    /// inside the folder it removes, empties it, and only then fails with
+    /// EBUSY on the mount point, leaving the folder half deleted.
+    static func mountRefusal(_ path: String, mountPoints: [String]) -> String? {
+        if mountPoints.contains(path) {
+            return "A disk is mounted at this folder. Eject it first."
+        }
+        if mountPoints.contains(where: { $0.hasPrefix(path + "/") }) {
+            return "A disk is mounted inside this folder. Eject it first."
+        }
+        return nil
+    }
+
+    /// Checked when validating and again right before acting: no disk is
+    /// mounted at or inside the item, and what FileManager deletes or moves
+    /// is on the home folder's disk.
+    func volumeRefusal(_ finding: Finding) -> String? {
+        if case .manual = finding.action { return nil }
+        guard let mountPoints = System.mountPoints() else {
+            return "Midden couldn't read the list of mounted disks."
+        }
+        if let refusal = Self.mountRefusal(finding.path, mountPoints: mountPoints) {
+            return refusal
+        }
+        guard case .run = finding.action else {
+            var item = stat()
+            var homeInfo = stat()
+            if lstat(finding.path, &item) == 0, lstat(home, &homeInfo) == 0, item.st_dev != homeInfo.st_dev {
+                return "It's on a different disk than your home folder."
+            }
+            return nil
+        }
+        return nil
+    }
+
     /// Returns nil on success, else what went wrong.
     func perform(_ finding: Finding) -> String? {
+        // A disk may have been mounted since the item was validated.
+        if let refusal = volumeRefusal(finding) { return refusal }
         let fileManager = FileManager.default
         switch finding.action {
         case .manual(let instructions):

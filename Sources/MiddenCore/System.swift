@@ -21,6 +21,22 @@ enum System {
             total: Int64(info.f_blocks) * block, free: Int64(info.f_bavail) * block, volumeName: name)
     }
 
+    /// Where every file system is mounted, from the kernel's mount table.
+    /// Nil when the table can't be read.
+    static func mountPoints() -> [String]? {
+        var table: UnsafeMutablePointer<statfs>?
+        // The _r_np variant gives this call its own buffer; getmntinfo
+        // reuses one shared buffer and isn't thread-safe.
+        let count = getmntinfo_r_np(&table, MNT_NOWAIT)
+        guard count > 0, let table else { return nil }
+        defer { free(table) }
+        return (0..<Int(count)).map { index in
+            withUnsafeBytes(of: table[index].f_mntonname) { bytes in
+                String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+            }
+        }
+    }
+
     /// Files and folders on the volume holding `path`, an upper bound on
     /// the items under it. Nil when the file system doesn't say.
     static func usedInodes(_ path: String) -> Int64? {
