@@ -208,16 +208,24 @@ struct WorktreeAuditor: Sendable {
             lastActivity: lastActivity)
     }
 
-    /// - Parameter outsideHome: found through its repository's list of worktrees.
+    /// - Parameters:
+    ///   - creator: the AI tool that made it, when its path shows that.
+    ///   - outsideHome: found through its repository's list of worktrees.
     static func explanation(
-        repositoryName: String?, branch: String?, removable: Bool, outsideHome: Bool = false
+        repositoryName: String?, branch: String?, removable: Bool,
+        creator: WorktreeCreator? = nil, outsideHome: Bool = false
     ) -> String {
         let repository = repositoryName.map { "the “\($0)” repository" } ?? "a git repository"
-        var text = """
-            A second checkout of \(repository), made with `git worktree add`. AI coding tools \
-            like Claude Code and Codex create worktrees for parallel tasks and often leave \
-            them behind.
-            """
+        var text: String
+        if let creator {
+            text = "A second checkout of \(repository) that \(creator.tool) made for a parallel task: \(creator.evidence)."
+        } else {
+            text = """
+                A second checkout of \(repository), made with `git worktree add`. AI coding tools \
+                like Claude Code and Codex create worktrees for parallel tasks and often leave \
+                them behind.
+                """
+        }
         if outsideHome {
             text += """
                  It's outside your home folder; Midden found it in the repository's list of \

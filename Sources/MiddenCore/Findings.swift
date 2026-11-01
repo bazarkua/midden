@@ -77,11 +77,13 @@ enum Findings {
         breakdown: [Slice] = []
     ) -> Finding {
         let name = (match.path as NSString).lastPathComponent
-        let title = audit.branch.map { $0 == name ? "Worktree \(name)" : "Worktree \(name) (\($0))" }
-            ?? "Worktree \(name)"
+        let creator = WorktreeCreator.identify(match.path, home: home)
+        let kind = creator.map { "\($0.tool) worktree" } ?? "Worktree"
+        let title = audit.branch.map { $0 == name ? "\(kind) \(name)" : "\(kind) \(name) (\($0))" }
+            ?? "\(kind) \(name)"
         let explanation = WorktreeAuditor.explanation(
             repositoryName: audit.repository == nil ? nil : audit.repositoryName,
-            branch: audit.branch, removable: audit.action.isAutomatic,
+            branch: audit.branch, removable: audit.action.isAutomatic, creator: creator,
             outsideHome: !match.path.hasPrefix(home + "/"))
         return Finding(
             id: match.path, category: .worktrees, title: title, path: match.path,

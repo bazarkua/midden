@@ -108,4 +108,41 @@ private func exists(_ path: String) -> Bool {
         }
         #expect(match.gitDir == repository + "/.git/worktrees/real")
     }
+
+    @Test func namesTheToolThatMadeAWorktree() throws {
+        let home = "/Users/me"
+        let cases: [(String, String?)] = [
+            ("/Users/me/Work/app/.claude/worktrees/agent-a1b2", "Claude Code"),
+            ("/private/tmp/claude-501/-Users-me-Work-app/0f1e/scratchpad/wt", "Claude Code"),
+            ("/Users/me/.codex/worktrees/3f2a/app", "Codex"),
+            ("/private/tmp/codex-l4-final-dev", "Codex"),
+            ("/Users/me/.cursor/worktrees/app/GxSol", "Cursor"),
+            ("/Users/me/Work/app-feature", nil),
+            ("/private/tmp/claudeish", nil),
+            ("/Users/other/.codex/worktrees/x/app", nil),
+        ]
+        for (path, tool) in cases {
+            #expect(WorktreeCreator.identify(path, home: home)?.tool == tool, "\(path)")
+        }
+        let codex = try #require(WorktreeCreator.identify("/private/tmp/codex-l4-final-dev", home: home))
+        #expect(codex.evidence.contains("codex-l4-final-dev"))
+        let claude = try #require(WorktreeCreator.identify(
+            "/private/tmp/claude-501/-Users-me-Work-app/0f1e/scratchpad/wt", home: home))
+        #expect(claude.evidence.contains("/private/tmp/claude-501"))
+    }
+
+    @Test func titlesAClaudeCodeWorktree() async throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home, "repo")
+        let worktree = home.path("repo/.claude/worktrees/agent-a1b2")
+        try sh(["git", "-C", repository, "worktree", "add", "-q", "-b", "fix-login", worktree])
+        try home.write("repo/.claude/worktrees/agent-a1b2/node_modules/dep/index.js", bytes: 2_000_000)
+
+        let report = try await scan(home)
+        let found = try #require(report.findings.first { $0.path == worktree })
+        #expect(found.title == "Claude Code worktree agent-a1b2 (fix-login)")
+        #expect(found.group == "repo")
+        #expect(found.explanation.contains("that Claude Code made for a parallel task"))
+        #expect(!found.explanation.contains("outside your home folder"))
+    }
 }
