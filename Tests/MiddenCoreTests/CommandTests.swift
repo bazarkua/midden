@@ -290,8 +290,15 @@ private func concurrently(_ count: Int, _ body: @escaping @Sendable (Int) -> Voi
             errno = EIO
             return -1
         }
+        // A child that closes both pipes and keeps running: the wait error
+        // comes right away, long before the timeout, so it's the early
+        // error path that has to stop the child.
+        let started = Date()
         let result = Command.run(
-            ["/bin/sleep", "30"], environment: [:], timeout: 1, children: children, waitpid: failing)
+            ["/bin/sh", "-c", "exec >&- 2>&-; sleep 30"], environment: [:], timeout: 10, children: children,
+            waitpid: failing)
+        #expect(Date().timeIntervalSince(started) < 3)
+        #expect(!result.error.contains("Timed out"), "\(result.error)")
         #expect(!result.succeeded)
         #expect(result.error.contains("exit status"), "\(result.error)")
         #expect(children.held == 1)

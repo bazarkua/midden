@@ -212,6 +212,8 @@ enum Command {
             return now >= deadline ? 0 : Double(deadline - now) / 1e9
         }
         var killed = false
+        // Killed because the deadline passed, as opposed to after an error.
+        var timedOut = false
         var stoppedAt: UInt64 = 0
         func stop() {
             // The whole group: children the command started go with it. A
@@ -225,6 +227,7 @@ enum Command {
         while fds.contains(where: { $0.fd >= 0 }) {
             let remaining = secondsLeft()
             if remaining <= 0 {
+                timedOut = true
                 stop()
                 break
             }
@@ -273,6 +276,7 @@ enum Command {
             }
             let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
             if !killed, now >= deadline {
+                timedOut = true
                 stop()
             } else if killed, now >= stoppedAt + UInt64(Self.exitGrace * 1e9) {
                 leftBehind = true
@@ -295,7 +299,7 @@ enum Command {
         var error = String(decoding: collected[1], as: UTF8.self)
         if leftBehind { error = "It didn't exit after being stopped. " + error }
         if statusUnknown { error = "Couldn't read its exit status. " + error }
-        if killed { error = "Timed out after \(Int(timeout)) seconds. " + error }
+        if timedOut { error = "Timed out after \(Int(timeout)) seconds. " + error }
         return CommandResult(
             status: exited && !killed ? (status >> 8) & 0xff : -1,
             output: String(decoding: collected[0], as: UTF8.self),
