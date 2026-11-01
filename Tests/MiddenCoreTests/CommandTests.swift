@@ -47,10 +47,18 @@ import Testing
         let dir = try TempDir()
         let pidFile = dir.path("grandchild.pid")
         let start = Date()
-        let result = Command.run(["/bin/sh", "-c", "sleep 30 & echo $! > \"$0\"", pidFile], timeout: 1)
+        // Its own budget: the shared one could make it wait for a slot and
+        // eat into its one-second deadline. (This test once failed with no
+        // pid file, cause unknown; the result is reported if it does again.)
+        let result = Command.run(
+            ["/bin/sh", "-c", "sleep 30 & echo $! > \"$0\"", pidFile], environment: [:], timeout: 1,
+            children: CommandChildren(limit: 4), waitpid: { Darwin.waitpid($0, $1, $2) })
         #expect(Date().timeIntervalSince(start) < 4)
         #expect(!result.succeeded)
-        let text = try String(contentsOfFile: pidFile, encoding: .utf8)
+        guard let text = try? String(contentsOfFile: pidFile, encoding: .utf8) else {
+            Issue.record("no pid file; the command's result: \(result)")
+            return
+        }
         let grandchild = try #require(pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)))
         // Gone, or at worst a zombie on its way out: give it a moment.
         var alive = true
