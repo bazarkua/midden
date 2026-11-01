@@ -13,8 +13,15 @@ import Synchronization
 ///   worktrees (20 GB of them outside home to size), and nearly all of it
 ///   with few worktrees. The time-left estimate follows the real pace, so
 ///   a slower worktree phase shows up there rather than as a stuck bar.
-/// - Reading progress is the larger of two ratios: bytes counted over bytes
-///   expected, and items listed over items expected. The app passes the
+/// - Reading progress follows items listed over items expected, which
+///   grow steadily with the walk's time. Bytes counted over bytes expected
+///   can only raise it, and only gradually: by at most 5% of the reading
+///   phase per second. Counting one huge file moved bytes from 6% to 35%
+///   of the denominator in one second on a real home; taken directly that
+///   made the bar leap (0.349 to 0.539 in a second), so bytes are a floor
+///   that catches up rather than a jump. Both ratios can only
+///   underestimate, so neither can make the bar claim too much. (Without an
+///   item count to expect, bytes are used as they come.) The app passes the
 ///   previous scan's totals when it has them, which makes both nearly
 ///   exact. Otherwise the denominators are the volume's used space and
 ///   used inodes, which can only overestimate the home folder: the bar
@@ -66,6 +73,8 @@ final class ProgressEstimator: Sendable {
     /// Fastest the published time left may grow, per second: this share of
     /// it, or 1 s, whichever is more.
     static let maximumGrowth = 0.1
+    /// Fastest the bytes floor may rise, in reading-phase fraction per second.
+    static let bytesCatchUp = 0.05
 
     private struct State {
         var phase: ScanPhase = .preparing
@@ -73,6 +82,9 @@ final class ProgressEstimator: Sendable {
         var phaseFraction = 0.0
         /// The same, by a measure that follows time (items, not bytes).
         var phasePace = 0.0
+        /// Where bytes allow the reading bar to be, rising gradually.
+        var bytesFloor = 0.0
+        var bytesFloorTime: TimeInterval?
         /// Overall pace, 0...1, for the time left. Only goes up.
         var pace = 0.0
         var items: Int64 = 0
@@ -134,8 +146,18 @@ final class ProgressEstimator: Sendable {
             state.path = progress.path
             let byBytes = Double(progress.bytes) / Double(expectedBytes)
             let byItems = expectedItems.map { Double(progress.items) / Double($0) } ?? 0
-            state.phaseFraction = max(byBytes, byItems)
-            state.phasePace = expectedItems == nil ? byBytes : byItems
+            if expectedItems == nil {
+                // Bytes are the only signal: nothing steadier to follow.
+                state.phaseFraction = byBytes
+                state.phasePace = byBytes
+            } else {
+                let time = now()
+                let elapsed = state.bytesFloorTime.map { time - $0 } ?? 0
+                state.bytesFloor = min(byBytes, state.bytesFloor + Self.bytesCatchUp * elapsed)
+                state.bytesFloorTime = time
+                state.phaseFraction = max(byItems, state.bytesFloor)
+                state.phasePace = byItems
+            }
         }
     }
 
