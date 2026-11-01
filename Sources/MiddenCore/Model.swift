@@ -282,15 +282,35 @@ public struct ScanReport: Codable, Sendable {
     }
 }
 
+/// What a scan is doing, in order.
+public enum ScanPhase: String, Codable, Sendable {
+    case preparing, reading, worktrees, simulators, finishing
+}
+
 public struct ScanProgress: Sendable, Hashable {
     public var items: Int64
     public var bytes: Int64
     public var currentPath: String
+    public var phase: ScanPhase
+    /// Overall estimate, 0...1; nil when unknown. Never goes backwards and
+    /// stays below 1: the returned report is the 100%.
+    public var fraction: Double?
+    /// Nil until the rate is stable, about 2 seconds into the scan.
+    public var secondsRemaining: Double?
+    /// e.g. "Checking 65 worktrees" or "17 of 65 worktrees".
+    public var detail: String?
 
-    public init(items: Int64, bytes: Int64, currentPath: String) {
+    public init(
+        items: Int64, bytes: Int64, currentPath: String, phase: ScanPhase = .reading,
+        fraction: Double? = nil, secondsRemaining: Double? = nil, detail: String? = nil
+    ) {
         self.items = items
         self.bytes = bytes
         self.currentPath = currentPath
+        self.phase = phase
+        self.fraction = fraction
+        self.secondsRemaining = secondsRemaining
+        self.detail = detail
     }
 }
 

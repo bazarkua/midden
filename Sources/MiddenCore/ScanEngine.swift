@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The whole scan as blocking code: one parallel walk, then the worktree
 /// audits and the simulator query, then the report.
@@ -16,6 +17,11 @@ struct ScanEngine {
         } catch {
             throw MiddenError.unreadable(path: options.home.path, code: error.code.rawValue)
         }
+        let disk = System.diskSpace(home)
+        let estimator = ProgressEstimator(
+            expectedBytes: options.expectedBytes ?? max(disk.total - disk.free, 1), report: progress)
+        estimator.begin(.preparing, detail: "Checking access")
+
         // Without Full Disk Access, protected folders are skipped rather than
         // opened: opening some of them waits on a permission prompt. The probe
         // itself gets a deadline for the same reason.
@@ -23,10 +29,11 @@ struct ScanEngine {
         let delegate = ScanDelegate(skipProtected: !fullDiskAccess)
         let walk: WalkResult<DirectoryMatch>
         do {
+            estimator.begin(.reading)
             walk = try Walker(
                 root: home, delegate: delegate,
                 threadCount: options.threadCount ?? WalkDefaults.threadCount
-            ).run(cancellation: cancellation, progress: progress)
+            ).run(cancellation: cancellation) { estimator.reading($0) }
         } catch {
             throw MiddenError.unreadable(path: home, code: error.code.rawValue)
         }
@@ -68,21 +75,45 @@ struct ScanEngine {
         // Worktrees outside home, found through the repositories inside it,
         // sized with the same walker.
         let external = ExternalWorktrees.discover(gitDirectories: delegate.gitDirectories, home: home)
+        // Each worktree outside home is sized, then each one to report is audited.
+        var steps = external.worktrees.count * 2 + worktrees.count
+        var done = 0
+        estimator.begin(.worktrees, detail: "Checking \(steps - external.worktrees.count) worktrees")
         for worktree in external.worktrees {
             if cancellation.isCancelled { throw MiddenError.cancelled }
+            done += 1
+            estimator.step(
+                done, of: steps, detail: "Sizing \(done) of \(external.worktrees.count) worktrees outside home",
+                path: worktree.path)
             guard let sized = try? Walker(root: worktree.path, delegate: SizeOnly())
                 .run(cancellation: cancellation)
             else { continue }
-            guard sized.totalBytes >= minimum else { continue }
+            guard sized.totalBytes >= minimum else {
+                steps -= 1  // Too small to report, so not audited.
+                continue
+            }
             worktrees.append((
                 worktree, sized.totalBytes,
                 Findings.breakdown(total: sized.totalBytes, children: sized.root?.children ?? [])))
         }
 
+        if cancellation.isCancelled { throw MiddenError.cancelled }
         if !worktrees.isEmpty {
             let auditor = WorktreeAuditor(
                 processes: .current(), now: now, activeWindow: options.worktreeActiveWindow)
-            let audits = Background.map(worktrees.map(\.match)) { auditor.audit($0) }
+            let audited = Atomic<Int>(0)
+            let total = worktrees.count
+            let alreadyDone = done
+            let totalSteps = steps
+            let audits = Background.map(worktrees.map(\.match)) { worktree in
+                let audit = auditor.audit(worktree)
+                let count = audited.add(1, ordering: .relaxed).newValue
+                estimator.step(
+                    alreadyDone + count, of: totalSteps, detail: "\(count) of \(total) worktrees",
+                    path: worktree.path)
+                return audit
+            }
+            if cancellation.isCancelled { throw MiddenError.cancelled }
             for (worktree, audit) in zip(worktrees, audits) {
                 findings.append(Findings.worktree(
                     worktree.match, audit: audit, home: home, bytes: worktree.bytes,
@@ -107,6 +138,9 @@ struct ScanEngine {
                 otherNames: names.dropFirst().map(\.path)))
         }
 
+        if !simulatorSizes.isEmpty {
+            estimator.begin(.simulators, detail: "Checking simulators")
+        }
         if !simulatorSizes.isEmpty, let devices = Simulators.unavailable(home: home) {
             for device in devices {
                 guard let bytes = simulatorSizes[device.udid], bytes >= minimum else { continue }
@@ -114,6 +148,7 @@ struct ScanEngine {
             }
         }
 
+        estimator.begin(.finishing, detail: "Building the report")
         findings.sort { ($0.bytes, $1.id) > ($1.bytes, $0.id) }
         let topFolders = (walk.root?.children ?? [])
             .filter(\.isDirectory)
@@ -123,7 +158,7 @@ struct ScanEngine {
         return ScanReport(
             home: home, startedAt: started, duration: Date().timeIntervalSince(started),
             itemsScanned: walk.items, bytesScanned: walk.totalBytes,
-            disk: System.diskSpace(home), findings: findings, topFolders: topFolders,
+            disk: disk, findings: findings, topFolders: topFolders,
             unreadableCount: walk.unreadable,
             needsFullDiskAccess: !fullDiskAccess)
     }

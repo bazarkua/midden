@@ -39,6 +39,11 @@ enum Format {
         return String(cString: resolved)
     }()
 
+    /// "45 s" or "3 min".
+    static func duration(_ seconds: Double) -> String {
+        seconds < 60 ? "\(max(Int(seconds.rounded()), 1)) s" : "\(Int((seconds / 60).rounded())) min"
+    }
+
     static func items(_ count: Int) -> String {
         count == 1 ? "1 item" : "\(count) items"
     }

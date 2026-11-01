@@ -286,8 +286,19 @@ final class ProgressLine: Sendable {
     func update(_ progress: ScanProgress) {
         guard enabled else { return }
         let width = Terminal.width
-        var line = "Scanning… \(Format.count(progress.items)) items, \(Format.bytes(progress.bytes))  "
-            + Format.path(progress.currentPath, home: home)
+        let phase =
+            switch progress.phase {
+            case .preparing: "Preparing"
+            case .reading: "Reading"
+            case .worktrees: "Checking worktrees"
+            case .simulators: "Checking simulators"
+            case .finishing: "Finishing"
+            }
+        let percent = progress.fraction.map { " \(Int($0 * 100))%" } ?? ""
+        let what = progress.detail
+            ?? "\(Format.count(progress.items)) items, \(Format.bytes(progress.bytes))"
+        let left = progress.secondsRemaining.map { " · about \(Format.duration($0)) left" } ?? ""
+        var line = "\(phase)\(percent) · \(what)\(left)  " + Format.path(progress.currentPath, home: home)
         if line.count > width - 1 { line = String(line.prefix(width - 2)) + "…" }
         shown.withLock { shown in
             Terminal.error("\r\u{1B}[K" + line, newline: false)

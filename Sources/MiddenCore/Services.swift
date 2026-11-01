@@ -7,6 +7,10 @@ public struct ScanOptions: Sendable {
     public var home: URL
     /// Findings smaller than this are left out of the report.
     public var minimumBytes: Int64
+    /// The previous scan's `bytesScanned`, if the app has one. Makes the
+    /// progress estimate much closer; without it the volume's used space
+    /// is the (pessimistic) estimate.
+    public var expectedBytes: Int64?
     /// Walker threads; nil picks a default for this Mac.
     var threadCount: Int?
     /// Build folders whose project changed more recently are "review".
