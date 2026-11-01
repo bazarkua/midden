@@ -270,6 +270,7 @@ echo "dataset,tool,run,wall_s,user_s,sys_s,max_rss_bytes,peak_footprint_bytes,in
 count=${#tool_list[@]}
 for dir in "${dirs[@]}"; do
     name=${label:-$(display "$dir")}
+    key=$(echo "$name" | tr -d ',')  # The dataset column of the CSV: no commas.
     tag=$(slug "$(basename "$dir")")
     echo "== $name" >&2
     load_start=$(uptime | sed 's/.*load averages*: //')
@@ -309,7 +310,7 @@ for dir in "${dirs[@]}"; do
                 counted=$(totals "$tool" "$stdout" "$prefix.err")
             fi
             fields=$(rusage_fields "$prefix.time")
-            echo "$name,$tool,$run,$(echo "$fields" | tr ' ' ','),$(echo "$counted" | tr ' ' ','),$load,$status" \
+            echo "$key,$tool,$run,$(echo "$fields" | tr ' ' ','),$(echo "$counted" | tr ' ' ','),$load,$status" \
                 | tr -d '\r' >>"$csv"
             echo "  run $run/$runs $tool: $(echo "$fields" | awk '{ print $1 }') s (load $load)" >&2
         done
@@ -340,7 +341,7 @@ for dir in "${dirs[@]}"; do
         echo "| Tool | Wall, median | Wall, min–max | User CPU | System CPU | Peak RSS | Items/s | Every run, in order (s) |"
         echo "|---|---:|---:|---:|---:|---:|---:|---|"
         for tool in "${tool_list[@]}"; do
-            awk -F, -v name="$name" -v tool="$tool" -v items="$reference" '
+            awk -F, -v name="$key" -v tool="$tool" -v items="$reference" '
                 function median(values, n,    i, j, t) {
                     for (i = 2; i <= n; i++) for (j = i; j > 1 && values[j - 1] > values[j]; j--) {
                         t = values[j]; values[j] = values[j - 1]; values[j - 1] = t
@@ -373,7 +374,7 @@ for dir in "${dirs[@]}"; do
         # to /dev/null when measured, so its totals come from its first run.
         round1() {
             local tool=$1
-            set -- $(awk -F, -v name="$name" -v tool="$tool" \
+            set -- $(awk -F, -v name="$key" -v tool="$tool" \
                 '$1 == name && $2 == tool && $3 == 1 { print $11, $12, $13; exit }' "$csv")
             if [ "$1" = "-" ] && [ "$2" = "-" ] && [ -e "$out/raw/$tag-$tool.first.out" ]; then
                 totals "$tool" "$out/raw/$tag-$tool.first.out" "$out/raw/$tag-$tool.first.err"
@@ -383,7 +384,7 @@ for dir in "${dirs[@]}"; do
         }
         # Whether a tool's items and bytes were the same in every measured run.
         steady() {
-            awk -F, -v name="$name" -v tool="$1" '$1 == name && $2 == tool {
+            awk -F, -v name="$key" -v tool="$1" '$1 == name && $2 == tool {
                     if ($11 != "-") items[$11]; if ($12 != "-") bytes[$12]; n++
                 }
                 END {
