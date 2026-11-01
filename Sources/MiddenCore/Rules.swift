@@ -493,6 +493,19 @@ enum RuleCatalog {
                 similar to `brew cleanup -s`; Homebrew downloads them again if it needs them.
                 """,
             action: .removeContents),
+        // llama.cpp downloads models (`-hf`) to LLAMA_CACHE, by default
+        // ~/Library/Caches/llama.cpp on macOS (fs_get_cache_directory in
+        // common/common.cpp). People save their own models there too.
+        Rule(
+            paths: ["Library/Caches/llama.cpp"],
+            category: .personal, safety: .info,
+            title: "llama.cpp models", group: "llama.cpp",
+            explanation: """
+                Language models llama.cpp downloaded, and any model files saved here by hand. \\
+                Large models take a long time to download again, and a model you converted or \\
+                quantized yourself can't be downloaded at all.
+                """,
+            action: .manual("Delete the models you no longer use in Finder.")),
         // pnpm's cacheDir is ~/Library/Caches/pnpm on macOS and holds
         // "package metadata, dlx cache, and some install verification
         // results" (pnpm.io/settings/other). The dlx folders hold the

@@ -109,6 +109,34 @@ func runScript(_ script: String, from directory: String) throws -> Process {
         #expect(!ProcessUsage.mentions("/private" + path, path))
     }
 
+    // MARK: llama.cpp
+
+    /// llama.cpp downloads models into ~/Library/Caches/llama.cpp, and
+    /// people save their own converted or quantized models there too. Both
+    /// are Info: one takes a long download to get back, the other can't be
+    /// downloaded at all, and no folder above them can be cleaned.
+    @Test func llamaCppModelsAreInfoAndSurviveEveryClean() async throws {
+        let home = try TempDir("home")
+        let downloaded = try home.write(
+            "Library/Caches/llama.cpp/ggml-org_gemma-3-1b-it-GGUF_gemma-3-1b-it-Q4_K_M.gguf", bytes: 300_000)
+        try home.write("Library/Caches/llama.cpp/ggml-org_gemma-3-1b-it-GGUF_gemma-3-1b-it-Q4_K_M.gguf.json", text: "{}")
+        let local = try home.write("Library/Caches/llama.cpp/my-finetune-Q5_K_M.gguf", bytes: 200_000)
+        try home.write("Library/Caches/com.example.other/blob", bytes: 100_000)
+        let (report, byPath) = try await scanAll(home)
+
+        let models = try #require(byPath[home.path("Library/Caches/llama.cpp")])
+        #expect(models.safety == .info)
+        #expect(!models.action.isAutomatic)
+        #expect(models.explanation.contains("can't be downloaded"))
+
+        let offered = report.findings.filter(\.action.isAutomatic).map(\.id)
+        let everything = offered + ["Library/Caches/llama.cpp", "Library/Caches", "Library"].map(home.path)
+        let results = await testCleaner(home).clean(everything).results
+        #expect(results.filter(\.ok).map(\.id) == offered)
+        #expect(pathExists(downloaded))
+        #expect(pathExists(local))
+    }
+
     // MARK: renv
 
     /// renv installs each package once into its cache and links it into

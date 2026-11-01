@@ -51,6 +51,7 @@ import Testing
         Case(path: "Library/Caches/org.R-project.R", title: "R package caches", safety: .info),
         Case(path: "Library/Caches/pypoetry", title: "Poetry", safety: .info),
         Case(path: "Library/Caches/pnpm", title: "pnpm cache", safety: .info),
+        Case(path: "Library/Caches/llama.cpp", title: "llama.cpp models", safety: .info),
         Case(path: "Library/Caches/pnpm/dlx", title: "pnpm dlx packages", safety: .review),
         Case(path: "Library/Caches/pnpm/metadata-v1.3", title: "pnpm metadata ({name})", safety: .safe),
         Case(path: "Library/Caches/pypoetry/virtualenvs", title: "Poetry virtual environments", safety: .review),
