@@ -463,7 +463,14 @@ enum RuleCatalog {
                 Models and datasets downloaded by Hugging Face libraries. Large models can take \
                 a long time to download again.
                 """,
-            action: .manual("Remove the models you no longer use with `huggingface-cli delete-cache`.")),
+            // huggingface_hub 1.x replaced `huggingface-cli` with `hf`. The
+            // commands are checked against `hf cache --help` from version
+            // 1.5.0 (CommandTextTests).
+            action: .manual("""
+                List the models with `hf cache ls` and remove the ones you no longer use with \
+                `hf cache rm <repo>` (the `hf` command of huggingface_hub, checked with version \
+                1.5).
+                """)),
         Rule(
             paths: [".cache/torch"],
             category: .packageCaches, safety: .review,
