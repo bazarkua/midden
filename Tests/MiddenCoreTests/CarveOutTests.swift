@@ -99,6 +99,28 @@ func runScript(_ script: String, from directory: String) throws -> Process {
         #expect(pathExists(home.path(Self.dlxTool)))
     }
 
+    /// The kernel keeps only 16 bytes of a command's name ("Spotify
+    /// Helper ("), so "Quit ..." names the app the program belongs to.
+    @Test func namesTheAppToQuit() {
+        func process(_ executable: String, _ command: String) -> ProcessUsage.Process {
+            ProcessUsage.Process(pid: 1, command: command, directory: "/", executable: executable, arguments: [])
+        }
+        let helper = process(
+            "/Applications/Spotify.app/Contents/Frameworks/Spotify Helper (Renderer).app/Contents/MacOS/Spotify Helper (Renderer)",
+            "Spotify Helper (")
+        #expect(helper.displayName == "Spotify")
+        #expect(process("/bin/sh", "sh").displayName == "sh")
+        #expect(process("", "curl").displayName == "curl")
+
+        let finding = Finding(
+            id: "/x", category: .appCaches, title: "t", path: "/x", group: "g", bytes: 1, safety: .review,
+            explanation: "e", action: .removeDirectory)
+        let users = ProcessUsage(processes: [helper, process("/Applications/Spotify.app/Contents/MacOS/Spotify", "Spotify")]
+            .map { var p = $0; p.directory = "/x"; return p })
+        let checked = Findings.checkingUse(finding, users)
+        #expect(checked.action == .manual("Quit Spotify first, then scan again."))
+    }
+
     @Test func argumentsNameAFolderOnlyAtPathBoundaries() {
         let path = "/Users/me/Library/Caches/pnpm/dlx"
         #expect(ProcessUsage.mentions(path, path))

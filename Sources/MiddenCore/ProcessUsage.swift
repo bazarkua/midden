@@ -14,6 +14,18 @@ struct ProcessUsage: Sendable {
         var directory: String
         var executable: String
         var arguments: [String]
+
+        /// What to tell the user to quit: the outermost app bundle the
+        /// program runs from ("Spotify" for its helpers), else the
+        /// program's file name. The kernel's command name is cut at 16
+        /// bytes ("Spotify Helper (").
+        var displayName: String {
+            let components = executable.split(separator: "/")
+            if let app = components.first(where: { $0.hasSuffix(".app") }) {
+                return String(app.dropLast(".app".count))
+            }
+            return components.last.map(String.init) ?? command
+        }
     }
 
     var processes: [Process]

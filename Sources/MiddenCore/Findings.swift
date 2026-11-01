@@ -72,12 +72,12 @@ enum Findings {
                 id: "inUse", title: title, passed: true, detail: "No running program uses it."))
             return finding
         }
-        let named = users.prefix(3).map { "\($0.command) (pid \($0.pid))" }.joined(separator: ", ")
+        let named = users.prefix(3).map { "\($0.displayName) (pid \($0.pid))" }.joined(separator: ", ")
         let more = users.count > 3 ? " and \(users.count - 3) more" : ""
         finding.checks.append(SafetyCheck(
             id: "inUse", title: title, passed: false, detail: "\(named)\(more) \(users.count == 1 ? "uses" : "use") it."))
         finding.safety = .info
-        let commands = Array(Set(users.map(\.command))).sorted().prefix(3).joined(separator: ", ")
+        let commands = Array(Set(users.map(\.displayName))).sorted().prefix(3).joined(separator: ", ")
         finding.action = .manual("Quit \(commands) first, then scan again.")
         return finding
     }
