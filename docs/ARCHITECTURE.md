@@ -96,10 +96,20 @@ A linked worktree is a directory whose `.git` is a file pointing into `<repo>/.g
 | No uncommitted or untracked files | `git status --porcelain` with `GIT_OPTIONAL_LOCKS=0` | Removing it would lose that work. The env var keeps a read-only scan from rewriting git's index. |
 | HEAD is on a branch | `git for-each-ref --contains HEAD` | Branches survive worktree removal. A detached commit on no branch would not. |
 | Not locked | `<gitdir>/locked` | Someone asked git to keep it. |
-| Not in use | one `lsof -a -d cwd` per scan | A running shell, dev server or agent has its working directory inside. |
+| Not in use | one in-process listing of the user's processes and their working directories (`sysctl` and `proc_pidinfo`) per scan | A running shell, dev server or agent has its working directory inside. |
 | Not used lately | timestamp of the last reflog entry | See below. |
 
 A failed blocking check makes the worktree Info and tells the user what to do about it. Clean but recently used means Review. Otherwise it is Safe.
+
+### A check that can't run never passes
+
+The first version found working directories with `lsof`. Inside the App Sandbox `lsof` exits with an error, and the engine read its empty output as "no process uses this folder". In a sandboxed test build the check reported "not in use" while a test process had its working directory inside the worktree, and the cleaner approved it.
+
+Two changes came out of that. Process information is now read in-process, which works inside the sandbox and reads all 550 of the user's processes on the test Mac in 8 ms. And every check fails closed: if the process list is incomplete, or the last-activity date is unknown, the check fails with the reason ("Couldn't check running programs") instead of passing silently.
+
+### Worktrees outside home
+
+Coding agents also put worktrees in temporary folders such as `/private/tmp`. Midden reads each repository's `.git/worktrees/*/gitdir` records to find them. A path outside home is accepted only if the link can be proven again from both ends: the folder's `.git` file points into a repository inside home, and that repository's record points back to this exact folder. A forged `.git` file fails the second half.
 
 The last-activity check shows why decisions need evidence. The first idea was the mtime of `logs/HEAD`. On the test Mac six worktrees had that mtime equal to the second, while the last entry inside one of them was six days older. Something had rewritten those files in bulk. The commit date is no better, because a worktree made yesterday from an old branch has an old commit date. The time written on the last reflog line is the moment of the last checkout or commit, so that is what Midden uses, with the mtime only as a fallback.
 
@@ -117,6 +127,41 @@ So the cleaner takes only ids and works out everything again from zero:
 
 Commands run through a small `posix_spawn` and `poll` runner instead of `Process`. It reads stdout and stderr together, so a chatty command can't fill one pipe and deadlock, it kills a command that hangs, and it skips the `/usr/bin/git` stub on Macs without developer tools so no install dialog appears.
 
+The freed size of each item is measured from the item itself, before and after. Free space on the volume is reported too, but inside the sandbox `statfs` rounds it to steps of 409.6 MB, so it can't be the source of a "Freed" number.
+
+## 4. Never hanging
+
+A scan once ran for 11 minutes on the test Mac. Every walker thread was blocked inside `open()`, waiting for a macOS privacy prompt that nobody answered. One pending prompt can stop a scan forever, so the walker now has two defenses.
+
+Without Full Disk Access, it skips folders that macOS protects: Mail, Messages, Safari, Photos libraries, Group Containers and Apple's app containers. The list comes from measurement: on the test Mac `du` failed on 538 folders, and 329 of the 338 protected app containers belonged to Apple. Skipped folders are counted as unreadable, so the report says what it didn't see.
+
+For everything else there is a watchdog. Each worker publishes the folder it is listing and bumps a heartbeat after every batch from `getattrlistbulk`, so a huge folder that is still being read keeps beating while a blocked `open()` does not. After 5 seconds without a beat, a supervisor claims the folder with a compare-and-swap, counts it as unreadable, completes its parent's countdown and starts a replacement worker. If the stuck call returns later, its result loses the same compare-and-swap and is dropped. The walk never waits for it.
+
+## 5. Honest progress
+
+A progress bar is only honest if it knows the total, and a scan doesn't know the total until it ends. The estimate works like this:
+
+- Reading folders is 85% of the bar, auditing worktrees 12%, simulators 1% and building the report 2%.
+- The reading share is bytes seen divided by the previous scan's total. On a first scan it divides by the volume's used space, which is an upper bound, so the bar jumps forward at the end instead of stalling at 99%.
+- The fraction is a running maximum capped at 0.99, so it never goes backwards and never claims to be done early.
+- Time left is an exponential moving average of the rate (α = 0.2), shown only after the first 2 seconds, when the rate has settled.
+
+## 6. The space map
+
+The app draws a treemap of the home folder. The walker already computes every folder's size in one pass, so it also keeps every file and folder of at least 20 MB as it completes, and the tree is built and pruned after the walk: children below 0.05% of the total merge into one "Other" node, with at most 40 children per node and 10 levels.
+
+The floor is measured, not guessed. On the 430 GB test home, 57,108 items were 1 MB or larger, 6,011 were 20 MB or larger, and 2,702 were 50 MB or larger. 20 MB is 0.05% of a 40 GB home, so for any larger home the floor hides nothing the map could draw. The map added about 1% to scan time (27.08 s against 26.81 s, median of 3 runs each) and has 1,473 nodes.
+
+## 7. Inside the App Store sandbox
+
+The Mac App Store requires the App Sandbox. A sandboxed test build showed what breaks:
+
+- `/usr/bin/git` and `xcrun` refuse to run ("cannot be used within an App Sandbox"). Called by its real path inside Xcode or the Command Line Tools, git works on folders the user granted. The engine resolves that path, and without developer tools worktrees become Info with an explanation.
+- `xcrun simctl` reported all 12 healthy simulators as unavailable. Trusting that would delete working simulators, so simulator cleanup is off in the sandbox.
+- `lsof` is denied, which led to the in-process process listing above.
+
+The engine detects the sandbox by itself, so one engine serves both the App Store edition and the direct download.
+
 ## Why Swift only
 
 Rust was the first plan, and C++ came up too. Neither makes the scan faster: the speed comes from `getattrlistbulk` and the thread pool, and both are the same call in any language. What a second language adds is a foreign function boundary, a second toolchain and a second binary to sign. C++ also adds memory-safety risk to a program that deletes files. Swift with strict concurrency checking gives memory and data-race safety, direct access to Darwin APIs, and one package for the engine, the CLI and any Mac front end.
@@ -125,12 +170,16 @@ There are no third-party dependencies, including for argument parsing.
 
 ## Testing
 
-`swift test` runs 45 tests (91 cases with parameters) against real file systems in temp folders:
+`swift test` runs 75 tests (131 cases with parameters) against real file systems in temp folders:
 
 - the directory reader against `lstat` for symlinks, sparse files, Unicode names and a directory large enough to need several bulk calls
 - scanner totals against `du -sk`, hard links, symlinks
 - a 29-row rule table and 19 build-folder cases, including the `~/.vscode` exclusion
-- worktree audits on real temporary git repositories: clean, dirty, detached commit, locked, in use by a real child process, bare repositories
+- worktree audits on real temporary git repositories: clean, dirty, detached commit, locked, in use by a real child process, bare repositories, worktrees outside home and a forged back-link
+- every check failing closed: an incomplete process list, an unknown activity date, an unreadable home
+- the watchdog with an injected reader that blocks forever, and one that is slow but alive
+- the progress estimate with a fake clock: phases in order, a fraction that never goes backwards
+- the space map: sizes add up, pruning rules, hard links counted once
 - cleaner refusals for paths outside home, symlinks, `..`, unknown folders and manual actions, and real deletion in a fake home
 
 ## Known limits
@@ -138,4 +187,4 @@ There are no third-party dependencies, including for argument parsing.
 - Between the last check and the delete there is a small window. Nothing locks the folder in between.
 - The running-app check matches by bundle id or display name, so it can miss an app whose process name is different.
 - Build folders don't check for a dev server running in the project yet.
-- The engine needs access to the real home folder, so an app built on it can't be sandboxed.
+- The watchdog is tested with an injected blocking reader. A real privacy prompt could not be triggered on the test Mac.
