@@ -45,6 +45,8 @@ struct CleanEngine {
     /// The mount table and a path's device; replaceable in tests.
     var mountPoints: @Sendable () -> [String]? = { System.mountPoints() }
     var deviceOf: @Sendable (String) -> dev_t? = { CleanEngine.lstatDevice($0) }
+    /// Reads the user's processes for "not in use" checks.
+    var processUsage: @Sendable () -> ProcessUsage = { ProcessUsage.current() }
 
     init(home: URL) throws {
         self.home = try System.canonicalPath(home.path)
@@ -211,7 +213,9 @@ struct CleanEngine {
                     bytes = survey.bytes
                     breakdown = Findings.breakdown(total: bytes, children: survey.children)
                 }
-                return .success((Findings.rule(rule, path: path, bytes: bytes, breakdown: breakdown), rule.rule.contents))
+                var finding = Findings.rule(rule, path: path, bytes: bytes, breakdown: breakdown)
+                if rule.rule.checkInUse { finding = Findings.checkingUse(finding, processUsage()) }
+                return .success((finding, rule.rule.contents))
             case .buildFolder(let build):
                 return .success((Findings.buildFolder(build, path: path, bytes: bytes), nil))
             case .worktree(let worktree):

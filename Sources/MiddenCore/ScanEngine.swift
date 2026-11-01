@@ -68,6 +68,8 @@ struct ScanEngine {
         let now = Date()
         let minimum = options.minimumBytes
         var findings: [Finding] = []
+        /// Indexes of findings whose rule asks for a "not in use" check.
+        var inUseChecks: [Int] = []
         var worktrees: [(match: WorktreeMatch, bytes: Int64, breakdown: [Slice])] = []
         // `worktrees` holds the ones inside home, sized by the walk.
         let devicesFolder = Simulators.devicesFolder(home: home)
@@ -113,6 +115,7 @@ struct ScanEngine {
             let breakdown = Findings.breakdown(total: total, children: children)
             switch match {
             case .rule(let rule):
+                if rule.rule.checkInUse { inUseChecks.append(findings.count) }
                 findings.append(Findings.rule(rule, path: directory.path, bytes: total, breakdown: breakdown))
             case .buildFolder(let build):
                 findings.append(Findings.buildFolder(
@@ -121,6 +124,11 @@ struct ScanEngine {
             case .worktree(let worktree):
                 worktrees.append((worktree, total, breakdown))
             }
+        }
+
+        if !inUseChecks.isEmpty {
+            let usage = options.processUsage?() ?? ProcessUsage.current()
+            for index in inUseChecks { findings[index] = Findings.checkingUse(findings[index], usage) }
         }
 
         // Worktrees outside home, found through the repositories inside it.

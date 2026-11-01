@@ -25,6 +25,8 @@ public struct ScanOptions: Sendable {
     /// The account home whose folders macOS protects; nil is the real one.
     /// Separate from `home`, which can be any folder.
     var privacyHome: String?
+    /// Lists the user's processes for "not in use" checks; nil reads them.
+    var processUsage: (@Sendable () -> ProcessUsage)?
 
     public init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -123,6 +125,8 @@ public struct Cleaner: Sendable {
     var trash: (@Sendable (String) throws -> Void)?
     /// Lets tests change the file system at a chosen stage of cleaning.
     var barrier: (@Sendable (CleanStage, String) -> Void)?
+    /// Replaces reading the user's processes, for "not in use" checks.
+    var processUsage: (@Sendable () -> ProcessUsage)?
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.home = home
@@ -132,6 +136,7 @@ public struct Cleaner: Sendable {
         var engine = try CleanEngine(home: home)
         if let trash { engine.trash = trash }
         if let barrier { engine.barrier = barrier }
+        if let processUsage { engine.processUsage = processUsage }
         return engine
     }
 

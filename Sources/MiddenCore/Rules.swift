@@ -26,6 +26,11 @@ struct Rule: Sendable {
     /// Engine-internal: the cleaner takes it from the rule it matches again
     /// at clean time.
     var contents: ContentsPolicy? = nil
+    /// Whether a running program can depend on it: run from it, work in
+    /// it, or name it in its arguments. Checked against the user's
+    /// processes after the scan and again when cleaning; while a program
+    /// uses it, or the processes can't all be read, it's Info.
+    var checkInUse = false
 }
 
 struct RuleMatch: Sendable {
@@ -488,6 +493,41 @@ enum RuleCatalog {
                 similar to `brew cleanup -s`; Homebrew downloads them again if it needs them.
                 """,
             action: .removeContents),
+        // pnpm's cacheDir is ~/Library/Caches/pnpm on macOS and holds
+        // "package metadata, dlx cache, and some install verification
+        // results" (pnpm.io/settings/other). The dlx folders hold the
+        // packages of commands run with `pnpm dlx`, which can be running.
+        Rule(
+            paths: ["Library/Caches/pnpm"],
+            category: .packageCaches, safety: .info,
+            title: "pnpm cache", group: "pnpm",
+            explanation: """
+                pnpm's cache folder: package metadata, and the packages of commands you ran \
+                with `pnpm dlx`. Each is listed separately, so Midden never deletes this folder \
+                as a whole.
+                """,
+            action: .manual("Clean the parts listed separately.")),
+        Rule(
+            paths: ["Library/Caches/pnpm/dlx"],
+            category: .packageCaches, safety: .review,
+            title: "pnpm dlx packages", group: "pnpm",
+            explanation: """
+                Packages pnpm downloaded to run commands with `pnpm dlx`, one folder per \
+                command. pnpm downloads them again the next time you run that command. How long \
+                ago a folder changed doesn't show whether a command still uses it, so Midden \
+                checks that no running program does.
+                """,
+            action: .removeDirectory,
+            checkInUse: true),
+        Rule(
+            paths: ["Library/Caches/pnpm/*"],
+            category: .packageCaches, safety: .safe,
+            title: "pnpm metadata ({name})", group: "pnpm",
+            explanation: """
+                Package metadata and install checks pnpm cached. pnpm downloads or redoes them \
+                as needed.
+                """,
+            action: .removeDirectory),
         // Poetry's cache-dir is ~/Library/Caches/pypoetry on macOS, and its
         // virtualenvs.path defaults to {cache-dir}/virtualenvs (Poetry's
         // configuration docs). Downloads live in cache/repositories and

@@ -51,6 +51,36 @@ enum Findings {
             breakdown: breakdown)
     }
 
+    /// Adds the "not in use" check to a finding whose rule asks for it. A
+    /// program that uses it, or a process listing that isn't complete,
+    /// makes it Info: Midden doesn't delete it until that's settled.
+    static func checkingUse(_ finding: Finding, _ usage: ProcessUsage) -> Finding {
+        guard finding.action.isAutomatic else { return finding }
+        var finding = finding
+        let title = "Not in use"
+        if let failure = usage.failure {
+            finding.checks.append(SafetyCheck(
+                id: "inUse", title: title, passed: false, detail: "Couldn't check running programs: \(failure)."))
+            finding.safety = .info
+            finding.action = .manual("Midden couldn't check which programs use it. Scan again to retry.")
+            return finding
+        }
+        let users = usage.using(finding.path)
+        guard !users.isEmpty else {
+            finding.checks.append(SafetyCheck(
+                id: "inUse", title: title, passed: true, detail: "No running program uses it."))
+            return finding
+        }
+        let named = users.prefix(3).map { "\($0.command) (pid \($0.pid))" }.joined(separator: ", ")
+        let more = users.count > 3 ? " and \(users.count - 3) more" : ""
+        finding.checks.append(SafetyCheck(
+            id: "inUse", title: title, passed: false, detail: "\(named)\(more) \(users.count == 1 ? "uses" : "use") it."))
+        finding.safety = .info
+        let commands = Array(Set(users.map(\.command))).sorted().prefix(3).joined(separator: ", ")
+        finding.action = .manual("Quit \(commands) first, then scan again.")
+        return finding
+    }
+
     static func buildFolder(
         _ match: BuildFolderMatch, path: String, bytes: Int64, breakdown: [Slice] = [],
         now: Date = Date(), idleWindow: TimeInterval = projectIdleWindow

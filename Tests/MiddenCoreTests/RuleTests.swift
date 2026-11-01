@@ -50,6 +50,9 @@ import Testing
         // A cache folder holding another rule's folder is that rule's container.
         Case(path: "Library/Caches/org.R-project.R", title: "R package caches", safety: .info),
         Case(path: "Library/Caches/pypoetry", title: "Poetry", safety: .info),
+        Case(path: "Library/Caches/pnpm", title: "pnpm cache", safety: .info),
+        Case(path: "Library/Caches/pnpm/dlx", title: "pnpm dlx packages", safety: .review),
+        Case(path: "Library/Caches/pnpm/metadata-v1.3", title: "pnpm metadata ({name})", safety: .safe),
         Case(path: "Library/Caches/pypoetry/virtualenvs", title: "Poetry virtual environments", safety: .review),
         Case(path: "Library/Caches/pypoetry/artifacts", title: "Poetry downloads ({name})", safety: .safe),
         Case(path: "Library/Caches/org.R-project.R/R/renv", title: "renv package cache", safety: .info),

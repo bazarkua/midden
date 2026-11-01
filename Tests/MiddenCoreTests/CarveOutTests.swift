@@ -6,7 +6,109 @@ import Testing
 // out of the folders around it. Each test scans, plans and cleans a fake
 // home in a temporary folder.
 
+/// Scans a fake home with a given process listing, reporting everything.
+func scanFindings(_ home: TempDir, processes: ProcessUsage? = nil) async throws -> [String: Finding] {
+    var options = ScanOptions.fakeHome(home, minimumBytes: 1)
+    if let processes { options.processUsage = { processes } }
+    let report = try await Scanner(options: options).scan()
+    return Dictionary(report.findings.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+}
+
+/// Runs `/bin/sh script` from `directory` until the returned process is
+/// terminated. The script's path appears only in the arguments.
+func runScript(_ script: String, from directory: String) throws -> Process {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = [script]
+    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+    try process.run()
+    return process
+}
+
 @Suite struct CarveOutTests {
+    // MARK: pnpm dlx
+
+    static let pnpm = "Library/Caches/pnpm"
+    static let dlxTool = pnpm + "/dlx/5f2a/node_modules/.bin/tool"
+
+    private func makePnpmHome() throws -> TempDir {
+        let home = try TempDir("home")
+        try home.write(Self.dlxTool, text: "#!/bin/sh\nwhile :; do sleep 0.2; done\n")
+        chmod(home.path(Self.dlxTool), 0o755)
+        try home.write(Self.pnpm + "/dlx/5f2a/node_modules/tool/index.js", bytes: 200_000)
+        try home.write(Self.pnpm + "/metadata-v1.3/registry.npmjs.org/left-pad.json", bytes: 100_000)
+        // Untouched for two months. That says nothing about whether a
+        // running program uses it.
+        for path in ["/dlx/5f2a/node_modules/tool/index.js", "/dlx/5f2a/node_modules/tool", "/dlx/5f2a/node_modules",
+                     "/dlx/5f2a", "/dlx"] {
+            try home.touch(Self.pnpm + path, daysAgo: 60)
+        }
+        return home
+    }
+
+    @Test func pnpmDlxIsReviewAndItsParentIsNeverRemoved() async throws {
+        let home = try makePnpmHome()
+        let byPath = try await scanFindings(home)
+        let dlx = try #require(byPath[home.path(Self.pnpm + "/dlx")])
+        // Old, idle and still only Review: its age isn't evidence of disuse.
+        #expect(dlx.safety == .review)
+        #expect(dlx.action == .removeDirectory)
+        #expect(dlx.checks.map(\.id) == ["inUse"])
+        #expect(dlx.checks.first?.passed == true)
+        #expect(byPath[home.path(Self.pnpm + "/metadata-v1.3")]?.safety == .safe)
+
+        for result in await testCleaner(home).clean([home.path(Self.pnpm), home.path("Library/Caches")]).results {
+            #expect(!result.ok, "\(result.id)")
+        }
+        #expect(pathExists(home.path(Self.dlxTool)))
+    }
+
+    /// A command pnpm dlx installed is running, started from another
+    /// folder: its script's path is only in the process's arguments.
+    @Test func aRunningDlxCommandKeepsItsFolder() async throws {
+        let home = try makePnpmHome()
+        let process = try runScript(home.path(Self.dlxTool), from: home.path)
+        defer { process.terminate() }
+
+        let byPath = try await scanFindings(home)
+        let dlx = try #require(byPath[home.path(Self.pnpm + "/dlx")])
+        #expect(dlx.safety == .info)
+        #expect(!dlx.action.isAutomatic)
+        #expect(dlx.checks.first?.passed == false)
+        #expect(dlx.checks.first?.detail.contains("pid \(process.processIdentifier)") == true, "\(dlx.checks)")
+
+        let result = try #require(await testCleaner(home).clean([home.path(Self.pnpm + "/dlx")]).results.first)
+        #expect(!result.ok)
+        #expect(result.message?.contains("Quit") == true, "\(result)")
+        #expect(pathExists(home.path(Self.dlxTool)))
+    }
+
+    /// Without a complete process listing, nothing counts as unused.
+    @Test func unknownProcessStateKeepsDlx() async throws {
+        let home = try makePnpmHome()
+        let unknown = ProcessUsage(processes: [], failure: "the system wouldn't list processes (test)")
+        let byPath = try await scanFindings(home, processes: unknown)
+        let dlx = try #require(byPath[home.path(Self.pnpm + "/dlx")])
+        #expect(dlx.safety == .info)
+        #expect(dlx.checks.first?.detail.contains("Couldn't check") == true, "\(dlx.checks)")
+
+        var cleaner = testCleaner(home)
+        cleaner.processUsage = { unknown }
+        let result = try #require(await cleaner.clean([home.path(Self.pnpm + "/dlx")]).results.first)
+        #expect(!result.ok)
+        #expect(pathExists(home.path(Self.dlxTool)))
+    }
+
+    @Test func argumentsNameAFolderOnlyAtPathBoundaries() {
+        let path = "/Users/me/Library/Caches/pnpm/dlx"
+        #expect(ProcessUsage.mentions(path, path))
+        #expect(ProcessUsage.mentions(path + "/x/bin.js", path))
+        #expect(ProcessUsage.mentions("--user-data-dir=" + path, path))
+        #expect(ProcessUsage.mentions("--cache=" + path + "/y", path))
+        #expect(!ProcessUsage.mentions(path + "2/x", path))
+        #expect(!ProcessUsage.mentions("/private" + path, path))
+    }
+
     // MARK: renv
 
     /// renv installs each package once into its cache and links it into
