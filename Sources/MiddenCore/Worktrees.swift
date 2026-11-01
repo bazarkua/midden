@@ -220,17 +220,45 @@ struct WorktreeAuditor: Sendable {
         return what + " Removing it deletes this folder only; \(kept) in the repository."
     }
 
-    /// When the worktree last moved: git appends to logs/HEAD on every
-    /// checkout and commit. Its creation date or last commit date would be
-    /// wrong for a worktree made yesterday from an old branch.
+    /// When the worktree's HEAD last moved. Git appends a line to logs/HEAD,
+    /// stamped with the time, on every checkout, commit and reset; the last
+    /// line's time is used because tools that rewrite reflogs in bulk (such
+    /// as reflog expiry during gc) bump the file's mtime for every worktree
+    /// at once. Falls back to the mtime of logs/HEAD, then of HEAD. A
+    /// worktree's last commit date would be wrong for one made yesterday
+    /// from an old branch.
     static func lastActivity(gitDir: String) -> Date? {
-        for file in ["logs/HEAD", "HEAD"] {
+        let log = gitDir + "/logs/HEAD"
+        if let time = lastReflogTime(log) {
+            return Date(timeIntervalSince1970: time)
+        }
+        for file in [log, gitDir + "/HEAD"] {
             var info = stat()
-            if lstat(gitDir + "/" + file, &info) == 0 {
+            if lstat(file, &info) == 0 {
                 return Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec))
             }
         }
         return nil
+    }
+
+    /// The time of the last entry of a reflog. Each line reads
+    /// `<old> <new> <name> <<email>> <unix time> <zone>\t<message>`.
+    static func lastReflogTime(_ path: String) -> Double? {
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_size > 0 else { return nil }
+        let length = Int(min(info.st_size, 8_192))
+        var buffer = [UInt8](repeating: 0, count: length)
+        guard pread(fd, &buffer, length, off_t(info.st_size) - off_t(length)) == length else { return nil }
+        let text = String(decoding: buffer, as: UTF8.self)
+        guard let line = text.split(separator: "\n").last,
+            let header = line.split(separator: "\t", maxSplits: 1).first,
+            let emailEnd = header.lastIndex(of: ">")
+        else { return nil }
+        let fields = header[header.index(after: emailEnd)...].split(separator: " ")
+        return fields.first.flatMap { Double($0) }
     }
 
     static func quoted(_ path: String) -> String {

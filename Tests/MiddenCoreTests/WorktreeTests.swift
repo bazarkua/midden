@@ -172,4 +172,24 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         #expect(processes.inside("/Users/me/repo/wt").map(\.pid) == [101])
         #expect(processes.inside("/Users/me/repo").count == 2)
     }
+
+    @Test func lastActivityComesFromTheLastReflogEntry() throws {
+        let dir = try TempDir()
+        let old = Int(Date().timeIntervalSince1970) - 30 * 86_400
+        let zero = String(repeating: "0", count: 40)
+        try dir.write("logs/HEAD", text: """
+            \(zero) \(zero) A <a@example.com> \(old - 100) -0700\tcommit (initial): Start
+            \(zero) \(zero) A <a@example.com> \(old) -0700\tcheckout: moving from main to topic
+
+            """)
+        // A bulk rewrite of the reflog bumps its mtime, not its entries.
+        try dir.touch("logs/HEAD", daysAgo: 0)
+        let activity = try #require(WorktreeAuditor.lastActivity(gitDir: dir.path))
+        #expect(activity.timeIntervalSince1970 == Double(old))
+
+        // Without a readable entry, fall back to the file's mtime.
+        try dir.write("other/logs/HEAD", text: "garbage\n")
+        let fallback = try #require(WorktreeAuditor.lastActivity(gitDir: dir.path("other")))
+        #expect(abs(fallback.timeIntervalSinceNow) < 120)
+    }
 }
