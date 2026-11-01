@@ -1,6 +1,9 @@
 // maketree: builds a reproducible synthetic tree shaped like a developer's
 // home folder, for benchmarking disk scanners. The same seed gives the same
-// tree: names, sizes, hard links, symlinks and shape. Only timestamps differ.
+// tree: names, sizes, hard links, symlinks and shape. In the home shape,
+// every entry's modification and access time is fixed too, derived from its
+// path, between 2024-11-27 and 2026-01-01 (UTC), so verdicts that depend on
+// age (a project idle for 14 days) are the same on any later day.
 //
 // With the default scale it makes about a million entries in under 5 GB:
 //   Work/            JavaScript projects with nested node_modules, .bin
@@ -28,6 +31,7 @@
 #define _DARWIN_C_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -592,6 +596,30 @@ static void home_tree(void) {
     pop(datasets);
 }
 
+// MARK: Fixed timestamps
+
+// 2026-01-01T00:00:00Z, and how far before it an entry's time may fall.
+enum { NEWEST = 1767225600, SPREAD = 400 * 86400 };
+static size_t root_length;
+
+// Sets an entry's times from its path below the root, so they don't depend
+// on when or in what order the tree was made. A file with several links
+// gets one fixed time, since all its names share it.
+static int fix_time(const char *entry, const struct stat *info, int kind, struct FTW *where) {
+    (void)kind;
+    (void)where;
+    uint64_t hash = 1469598103934665603ULL;  // FNV-1a
+    for (const char *c = entry + root_length; *c; c++) hash = (hash ^ (uint8_t)*c) * 1099511628211ULL;
+    time_t when = NEWEST - (time_t)(S_ISDIR(info->st_mode) || info->st_nlink <= 1 ? mix(hash) % SPREAD
+                                                                                 : SPREAD / 2);
+    struct timespec times[2] = {{when, 0}, {when, 0}};
+    if (utimensat(AT_FDCWD, entry, times, AT_SYMLINK_NOFOLLOW) != 0) {
+        perror(entry);
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     uint64_t seed = 20261101;
     const char *root = NULL, *shape = "home";
@@ -627,6 +655,16 @@ int main(int argc, char **argv) {
     if (!strcmp(shape, "flat")) flat_tree();
     else if (!strcmp(shape, "deep")) deep_tree();
     else home_tree();
+
+    // Children first (FTW_DEPTH), since adding an entry changes its
+    // folder's time. Symlinks get their own time, not their target's.
+    if (!dry_run && !strcmp(shape, "home")) {
+        root_length = strlen(root);
+        if (nftw(root, fix_time, 64, FTW_DEPTH | FTW_PHYS) != 0) {
+            snprintf(path, sizeof(path), "%s", root);
+            die("fixing timestamps");
+        }
+    }
 
     long long entries = made.dirs + made.files + made.symlinks + made.hard_links;
     printf("%s%lld entries: %lld folders, %lld files, %lld symlinks, %lld hard links; "
