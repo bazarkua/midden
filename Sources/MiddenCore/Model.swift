@@ -1,0 +1,301 @@
+import Foundation
+
+// The data contract between the engine and its front ends (CLI, app).
+// Everything here is a plain value type so a report can be encoded to JSON
+// (`midden scan --json`) and read back by any front end unchanged.
+
+/// How sure Midden is that deleting something is harmless.
+public enum Safety: String, Codable, Sendable, CaseIterable, Comparable {
+    /// The owning tool or app recreates it on its own. Picked by "Clean safe items".
+    case safe
+    /// Deletable, but it has a cost worth a look first: a rebuild, a large
+    /// re-download, or activity in the last few days.
+    case review
+    /// Explained but never deleted by Midden: your own files, or things that
+    /// must be cleaned inside the app that owns them.
+    case info
+
+    public static func < (lhs: Safety, rhs: Safety) -> Bool {
+        lhs.rank < rhs.rank
+    }
+
+    private var rank: Int {
+        switch self {
+        case .safe: 0
+        case .review: 1
+        case .info: 2
+        }
+    }
+}
+
+/// The groups findings are shown in.
+public enum Category: String, Codable, Sendable, CaseIterable, Identifiable {
+    case worktrees
+    case buildFolders
+    case developerTools
+    case packageCaches
+    case appCaches
+    case system
+    case largeFiles
+    case personal
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .worktrees: "Git worktrees"
+        case .buildFolders: "Build folders"
+        case .developerTools: "Developer tools"
+        case .packageCaches: "Package caches"
+        case .appCaches: "App caches"
+        case .system: "Logs and Trash"
+        case .largeFiles: "Large files"
+        case .personal: "Your files"
+        }
+    }
+
+    public var summary: String {
+        switch self {
+        case .worktrees: "Extra checkouts of your repositories, often left behind by AI coding tools."
+        case .buildFolders: "node_modules, target, .next and other folders a build recreates."
+        case .developerTools: "Xcode, simulators, Android and Docker data."
+        case .packageCaches: "Downloads kept by npm, Gradle, Cargo, uv and other package managers."
+        case .appCaches: "Files apps keep to load faster. They rebuild them as needed."
+        case .system: "Log files and the Trash."
+        case .largeFiles: "Single files over 1 GB, and installers you may no longer need."
+        case .personal: "Your own data. Midden explains it but never deletes it."
+        }
+    }
+
+    /// SF Symbol name.
+    public var symbol: String {
+        switch self {
+        case .worktrees: "arrow.triangle.branch"
+        case .buildFolders: "hammer"
+        case .developerTools: "wrench.and.screwdriver"
+        case .packageCaches: "shippingbox"
+        case .appCaches: "square.stack.3d.up"
+        case .system: "doc.text"
+        case .largeFiles: "doc.zipper"
+        case .personal: "person.crop.square"
+        }
+    }
+}
+
+/// What cleaning a finding does.
+public enum CleanAction: Codable, Sendable, Hashable {
+    /// Delete the folder itself.
+    case removeDirectory
+    /// Empty the folder but keep it, for locations an app expects to exist.
+    case removeContents
+    /// Delete a single file.
+    case removeFile
+    /// Run the owning tool's own command, e.g. `git worktree remove`, so the
+    /// tool can refuse if something is wrong.
+    case run([String])
+    /// Midden won't delete this. The string says how to do it by hand.
+    case manual(String)
+
+    /// Whether Midden can perform this action itself.
+    public var isAutomatic: Bool {
+        if case .manual = self { return false }
+        return true
+    }
+}
+
+/// One check Midden ran before calling something safe, shown to the user so
+/// the verdict is explainable. Example: "No uncommitted changes".
+public struct SafetyCheck: Codable, Sendable, Hashable {
+    public var title: String
+    public var passed: Bool
+    public var detail: String
+
+    public init(title: String, passed: Bool, detail: String) {
+        self.title = title
+        self.passed = passed
+        self.detail = detail
+    }
+}
+
+/// A named part of a finding's size, e.g. the `node_modules` inside a worktree.
+public struct Slice: Codable, Sendable, Hashable {
+    public var name: String
+    public var bytes: Int64
+
+    public init(name: String, bytes: Int64) {
+        self.name = name
+        self.bytes = bytes
+    }
+}
+
+/// The app whose data a finding belongs to, so the UI can ask the user to
+/// quit it before cleaning.
+public struct AppHint: Codable, Sendable, Hashable {
+    public var name: String?
+    public var bundleID: String?
+
+    public init(name: String? = nil, bundleID: String? = nil) {
+        self.name = name
+        self.bundleID = bundleID
+    }
+}
+
+/// Something Midden found that takes space, with the reasoning behind its verdict.
+public struct Finding: Identifiable, Codable, Sendable, Hashable {
+    /// Absolute path for file-system findings, `sim:<UDID>` for simulators.
+    public var id: String
+    public var category: Category
+    public var title: String
+    public var path: String
+    /// What the finding belongs to, for drilling down: a repository, project,
+    /// app or tool name.
+    public var group: String
+    /// Bytes actually allocated on disk, hard links counted once.
+    public var bytes: Int64
+    public var safety: Safety
+    /// Plain-language explanation of what this is and what deleting it costs.
+    public var explanation: String
+    public var checks: [SafetyCheck]
+    public var action: CleanAction
+    public var app: AppHint?
+    public var lastActivity: Date?
+    /// Largest parts of this finding, biggest first.
+    public var breakdown: [Slice]
+
+    public init(
+        id: String,
+        category: Category,
+        title: String,
+        path: String,
+        group: String,
+        bytes: Int64,
+        safety: Safety,
+        explanation: String,
+        checks: [SafetyCheck] = [],
+        action: CleanAction,
+        app: AppHint? = nil,
+        lastActivity: Date? = nil,
+        breakdown: [Slice] = []
+    ) {
+        self.id = id
+        self.category = category
+        self.title = title
+        self.path = path
+        self.group = group
+        self.bytes = bytes
+        self.safety = safety
+        self.explanation = explanation
+        self.checks = checks
+        self.action = action
+        self.app = app
+        self.lastActivity = lastActivity
+        self.breakdown = breakdown
+    }
+}
+
+/// Size of a top-level folder in the home directory, for "where your space goes".
+public struct FolderUsage: Codable, Sendable, Hashable {
+    public var path: String
+    public var name: String
+    public var bytes: Int64
+
+    public init(path: String, name: String, bytes: Int64) {
+        self.path = path
+        self.name = name
+        self.bytes = bytes
+    }
+}
+
+public struct DiskSpace: Codable, Sendable, Hashable {
+    public var total: Int64
+    public var free: Int64
+
+    public init(total: Int64, free: Int64) {
+        self.total = total
+        self.free = free
+    }
+}
+
+public struct ScanReport: Codable, Sendable {
+    public var home: String
+    public var startedAt: Date
+    /// Seconds.
+    public var duration: Double
+    public var itemsScanned: Int64
+    public var bytesScanned: Int64
+    public var disk: DiskSpace
+    /// Sorted by size, largest first.
+    public var findings: [Finding]
+    public var topFolders: [FolderUsage]
+    /// Folders the scan couldn't read, usually for lack of Full Disk Access.
+    public var unreadableCount: Int
+    public var needsFullDiskAccess: Bool
+
+    public init(
+        home: String,
+        startedAt: Date,
+        duration: Double,
+        itemsScanned: Int64,
+        bytesScanned: Int64,
+        disk: DiskSpace,
+        findings: [Finding],
+        topFolders: [FolderUsage],
+        unreadableCount: Int,
+        needsFullDiskAccess: Bool
+    ) {
+        self.home = home
+        self.startedAt = startedAt
+        self.duration = duration
+        self.itemsScanned = itemsScanned
+        self.bytesScanned = bytesScanned
+        self.disk = disk
+        self.findings = findings
+        self.topFolders = topFolders
+        self.unreadableCount = unreadableCount
+        self.needsFullDiskAccess = needsFullDiskAccess
+    }
+
+    /// Bytes Midden could free for a given safety level.
+    public func reclaimable(_ safety: Safety) -> Int64 {
+        findings.lazy
+            .filter { $0.safety == safety && $0.action.isAutomatic }
+            .reduce(0) { $0 + $1.bytes }
+    }
+}
+
+public struct ScanProgress: Sendable, Hashable {
+    public var items: Int64
+    public var bytes: Int64
+    public var currentPath: String
+
+    public init(items: Int64, bytes: Int64, currentPath: String) {
+        self.items = items
+        self.bytes = bytes
+        self.currentPath = currentPath
+    }
+}
+
+public struct CleanResult: Codable, Sendable, Hashable {
+    public var id: String
+    public var ok: Bool
+    /// Why it failed or was refused. Nil on success.
+    public var message: String?
+
+    public init(id: String, ok: Bool, message: String? = nil) {
+        self.id = id
+        self.ok = ok
+        self.message = message
+    }
+}
+
+public struct CleanSummary: Codable, Sendable {
+    public var results: [CleanResult]
+    public var freeBefore: Int64
+    public var freeAfter: Int64
+
+    public init(results: [CleanResult], freeBefore: Int64, freeAfter: Int64) {
+        self.results = results
+        self.freeBefore = freeBefore
+        self.freeAfter = freeAfter
+    }
+}
