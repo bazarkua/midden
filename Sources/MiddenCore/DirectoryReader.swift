@@ -121,13 +121,46 @@ final class DirectoryReader {
     /// Lists `path` without following a symlink at `path` itself. Throws
     /// when it can't be opened or nothing at all could be read.
     func listing(atPath path: String) throws(POSIXError) -> DirectoryListing {
-        var fd: Int32
-        repeat {
-            fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        } while fd < 0 && errno == EINTR
-        if fd < 0 { throw POSIXError(errno) }
+        let fd = try Self.openDirectory(path)
         defer { close(fd) }
         return try listing(directory: fd)
+    }
+
+    /// Opens a directory without following a symlink at its last component.
+    /// open() fails with ENAMETOOLONG for a path of PATH_MAX (1024) bytes or
+    /// more, so a longer one is opened in pieces split at slashes, each
+    /// shorter than that and opened relative to the one before.
+    static func openDirectory(_ path: String) throws(POSIXError) -> Int32 {
+        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        func retrying(_ call: () -> Int32) throws(POSIXError) -> Int32 {
+            var fd: Int32
+            repeat { fd = call() } while fd < 0 && errno == EINTR
+            if fd < 0 { throw POSIXError(errno) }
+            return fd
+        }
+        let limit = Int(PATH_MAX) - 1
+        guard path.utf8.count > limit else { return try retrying { open(path, flags) } }
+
+        var pieces: [String] = []
+        var piece = path.hasPrefix("/") ? "/" : ""
+        for component in path.split(separator: "/") {
+            let separator = piece.isEmpty || piece == "/" ? "" : "/"
+            if piece.utf8.count + separator.utf8.count + component.utf8.count > limit, !piece.isEmpty {
+                pieces.append(piece)
+                piece = String(component)
+            } else {
+                piece += separator + component
+            }
+        }
+        pieces.append(piece)
+
+        var fd = try retrying { open(pieces[0], flags) }
+        for next in pieces.dropFirst() {
+            let parent = fd
+            defer { close(parent) }
+            fd = try retrying { openat(parent, next, flags) }
+        }
+        return fd
     }
 
     /// Lists an open directory. The caller keeps ownership of `fd`.
