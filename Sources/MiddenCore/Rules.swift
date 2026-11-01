@@ -506,13 +506,65 @@ enum RuleCatalog {
                 reinstall their packages.
                 """,
             action: .manual("Remove packages no project uses with `renv::clean()` in a project, or `renv::purge()`.")),
+        // Owners of ~/Library/Caches folders that earn Safe, each with the
+        // reason the owner rebuilds what's there. Every other folder in
+        // Caches is Review (the wildcard below): macOS asks apps to keep
+        // only recreatable files there, but nothing enforces it.
+        //
+        // Yarn 1: `getCacheDir` in yarnpkg/yarn's src/util/user-dirs.js
+        // returns ~/Library/Caches/Yarn on macOS; `yarn cache clean` empties
+        // it and installs fill it again.
+        Rule(
+            paths: ["Library/Caches/Yarn"],
+            category: .packageCaches, safety: .safe,
+            title: "Yarn cache", group: "Yarn",
+            explanation: """
+                Packages Yarn 1 downloaded. Yarn downloads them again when a project installs \
+                them; `yarn cache clean` deletes the same files.
+                """,
+            action: .removeDirectory),
+        // Go: `go help cache` puts the build cache in go-build inside the
+        // user cache directory (~/Library/Caches on macOS); "go clean -cache
+        // deletes all cached data".
+        Rule(
+            paths: ["Library/Caches/go-build"],
+            category: .packageCaches, safety: .safe,
+            title: "Go build cache", group: "Go",
+            explanation: """
+                Go's build and test cache. Go rebuilds what it needs, so the next builds and \
+                tests take longer; `go clean -cache` deletes the same files.
+                """,
+            action: .removeDirectory),
+        // CocoaPods: cache_root defaults to ~/Library/Caches/CocoaPods
+        // (lib/cocoapods/config.rb); `pod cache clean --all` empties it.
+        Rule(
+            paths: ["Library/Caches/CocoaPods"],
+            category: .packageCaches, safety: .safe,
+            title: "CocoaPods cache", group: "CocoaPods",
+            explanation: """
+                Pods and specs CocoaPods downloaded. `pod install` downloads them again when a \
+                project needs them; `pod cache clean --all` deletes the same files.
+                """,
+            action: .removeDirectory),
+        // Chromium browsers: GetUserCacheDirectory (chrome_paths_mac.mm)
+        // puts a profile's disk cache under ~/Library/Caches at the path
+        // its profile has under Application Support, apart from cookies,
+        // history and sign-ins, which stay in the profile.
+        browserCache("Library/Caches/Google/Chrome", AppHint(name: "Google Chrome", bundleID: "com.google.Chrome")),
+        browserCache("Library/Caches/BraveSoftware/Brave-Browser", AppHint(name: "Brave", bundleID: "com.brave.Browser")),
+        browserCache("Library/Caches/Microsoft Edge", AppHint(name: "Microsoft Edge", bundleID: "com.microsoft.edgemac")),
+        browserCache("Library/Caches/Vivaldi", AppHint(name: "Vivaldi", bundleID: "com.vivaldi.Vivaldi")),
+        browserCache("Library/Caches/Arc/User Data", AppHint(name: "Arc", bundleID: "company.thebrowser.Browser")),
+        browserCache("Library/Caches/Dia/User Data", AppHint(name: "Dia")),
         Rule(
             paths: ["Library/Caches/*"],
-            category: .appCaches, safety: .safe,
+            category: .appCaches, safety: .review,
             title: "{app} cache", group: "{app}",
             explanation: """
-                Files {app} keeps to load faster. Apps recreate them as needed, so {app} may be \
-                slower the first time. Quit {app} first.
+                Data {app} keeps in your Caches folder. Midden doesn't know this folder's owner \
+                well enough to say it rebuilds everything here: being in Caches doesn't prove \
+                that, and some tools keep environments, models or sign-ins in it. Check what it \
+                is before deleting it, and quit {app} first.
                 """,
             action: .removeDirectory,
             app: .wildcard),
@@ -584,6 +636,22 @@ enum RuleCatalog {
                 """,
             action: .manual("See your models with `ollama list` and remove the ones you don't use with `ollama rm <model>`.")),
     ]
+
+    /// A Chromium browser's disk cache, kept per profile apart from the
+    /// profile itself.
+    private static func browserCache(_ path: String, _ app: AppHint) -> Rule {
+        Rule(
+            paths: [path],
+            category: .appCaches, safety: .safe,
+            title: "{app} disk cache", group: "{app}",
+            explanation: """
+                Copies of pages, images and scripts {app} downloaded, kept per profile. \
+                Chromium-based browsers keep this cache apart from your sign-ins, history and \
+                settings, and fill it again as you browse. Quit {app} first.
+                """,
+            action: .removeDirectory,
+            app: .fixed(app))
+    }
 
     private struct Pattern: Sendable {
         var components: [String]

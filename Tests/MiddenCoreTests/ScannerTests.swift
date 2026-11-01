@@ -43,7 +43,9 @@ import Testing
 
         let cache = try #require(byPath[home.path("Library/Caches/com.example.fake")])
         #expect(cache.category == .appCaches)
-        #expect(cache.safety == .safe)
+        // Midden doesn't know this cache's owner, so it's Review, and says why.
+        #expect(cache.safety == .review)
+        #expect(cache.explanation.contains("doesn't know"))
         #expect(cache.action == .removeDirectory)
         #expect(cache.app?.bundleID == "com.example.fake")
         #expect(cache.breakdown.map(\.name) == ["data", "index"])

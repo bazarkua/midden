@@ -27,8 +27,24 @@ import Testing
         Case(path: ".cache/gitstatus", title: "~/.cache/{name}", safety: .review, wildcard: "gitstatus"),
         Case(path: "Library/Caches/pip", title: "pip cache", safety: .safe),
         Case(path: "Library/Caches/Homebrew", title: "Homebrew downloads", safety: .safe),
-        Case(path: "Library/Caches/com.spotify.client", title: "{app} cache", safety: .safe,
+        // A cache folder Midden has no owner-specific rule for is Review:
+        // being in Caches doesn't prove its owner rebuilds it.
+        Case(path: "Library/Caches/com.spotify.client", title: "{app} cache", safety: .review,
              wildcard: "com.spotify.client"),
+        Case(path: "Library/Caches/com.example.unknown", title: "{app} cache", safety: .review,
+             wildcard: "com.example.unknown"),
+        // Known owners earn Safe, each for a documented reason.
+        Case(path: "Library/Caches/Yarn", title: "Yarn cache", safety: .safe),
+        Case(path: "Library/Caches/go-build", title: "Go build cache", safety: .safe),
+        Case(path: "Library/Caches/CocoaPods", title: "CocoaPods cache", safety: .safe),
+        Case(path: "Library/Caches/Google/Chrome", title: "{app} disk cache", safety: .safe),
+        Case(path: "Library/Caches/BraveSoftware/Brave-Browser", title: "{app} disk cache", safety: .safe),
+        Case(path: "Library/Caches/Microsoft Edge", title: "{app} disk cache", safety: .safe),
+        Case(path: "Library/Caches/Vivaldi", title: "{app} disk cache", safety: .safe),
+        Case(path: "Library/Caches/Arc/User Data", title: "{app} disk cache", safety: .safe),
+        Case(path: "Library/Caches/Dia/User Data", title: "{app} disk cache", safety: .safe),
+        // Their parents, when another wildcard matches them, are containers.
+        Case(path: "Library/Caches/Google", title: "{app} cache", safety: .review, wildcard: "Google"),
         Case(path: "Library/Application Support/Slack/Code Cache", title: "{app} web cache ({name})",
              safety: .safe, wildcard: "Slack"),
         // A cache folder holding another rule's folder is that rule's container.
