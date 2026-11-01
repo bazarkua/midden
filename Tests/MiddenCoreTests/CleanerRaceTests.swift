@@ -88,18 +88,19 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
     }
 
     /// removeContents lists the folder by path, so a symlink swapped in for
-    /// it, or for an ancestor, is followed.
+    /// it, or for an ancestor, is followed. (Logs, which deletes only old
+    /// files through descriptors, is tested in LogsTests.)
     @Test(arguments: CleanStage.allCases)
     func folderEmptiedInPlaceSwappedForASymlink(stage: CleanStage) async throws {
         let home = try TempDir("home")
         let outside = try TempDir("outside")
-        try home.write("Library/Logs/old.log", bytes: 1_000)
-        let sentinel = try outside.write("Logs/precious.txt", text: "outside home")
-        let logs = home.path("Library/Logs")
-        let target = outside.path("Logs")
-        let trigger = Trigger(at: stage) { swapForSymlink(logs, to: target) }
+        try home.write(".cocoapods/repos/trunk/spec.json", bytes: 1_000)
+        let sentinel = try outside.write("repos/precious.txt", text: "outside home")
+        let repos = home.path(".cocoapods/repos")
+        let target = outside.path("repos")
+        let trigger = Trigger(at: stage) { swapForSymlink(repos, to: target) }
 
-        let result = await cleaner(home, trigger).clean([logs]).results[0]
+        let result = await cleaner(home, trigger).clean([repos]).results[0]
         #expect(trigger.changed)
         expectSafe(known: stage == .beforeDelete, "folder swapped right before removeContents") {
             #expect(exists(sentinel))

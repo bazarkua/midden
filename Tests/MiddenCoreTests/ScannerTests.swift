@@ -13,6 +13,7 @@ import Testing
         try home.write("Library/Caches/com.apple.Something/x", bytes: 3_000_000)
         try home.write("Library/Developer/Xcode/DerivedData/App-abc/Build/out", bytes: 2_000_000)
         try home.write("Library/Logs/app.log", bytes: 1_100_000)
+        try home.touch("Library/Logs/app.log", daysAgo: 10)
         try home.write("Downloads/Installer.dmg", bytes: 101_000_000)
         try home.write("Downloads/notes.txt", text: "hi")
         try home.write("Downloads/archive.zip", bytes: 2_000_000)

@@ -31,6 +31,8 @@ private func exists(_ path: String) -> Bool {
         try home.write("Library/Caches/com.example.fake/data/blob", bytes: 200_000)
         try home.write("Library/Logs/old.log", bytes: 1_000)
         try home.write("Library/Logs/DiagnosticReports/crash.ips", bytes: 1_000)
+        try home.touch("Library/Logs/old.log", daysAgo: 10)
+        try home.touch("Library/Logs/DiagnosticReports/crash.ips", daysAgo: 10)
 
         let plans = await Cleaner(home: home.url).plan([home.path("Library/Caches/com.example.fake")])
         #expect(plans.first?.isApproved == true)
@@ -45,9 +47,10 @@ private func exists(_ path: String) -> Bool {
         #expect(summary.results[0].freedBytes >= 200_000)
         #expect(summary.results[1].freedBytes >= 2_000)
         #expect(!exists(home.path("Library/Caches/com.example.fake")))
-        // removeContents keeps the folder itself.
-        #expect(exists(home.path("Library/Logs")))
-        #expect(try FileManager.default.contentsOfDirectory(atPath: home.path("Library/Logs")).isEmpty)
+        // Logs keeps every folder, DiagnosticReports included, and loses
+        // its old files.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: home.path("Library/Logs")) == ["DiagnosticReports"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: home.path("Library/Logs/DiagnosticReports")).isEmpty)
     }
 
     @Test func deletesAnOldBuildFolderAndTrashesAnInstaller() async throws {

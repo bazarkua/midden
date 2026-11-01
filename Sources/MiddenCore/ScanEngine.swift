@@ -95,14 +95,22 @@ struct ScanEngine {
         for directory in walk.marked {
             guard let match = directory.mark else { continue }
             let remainder = remainders[directory.path]
-            let total = remainder?.bytes ?? directory.total
+            var total = remainder?.bytes ?? directory.total
+            var children = remainder?.children ?? directory.children
+            // A finding that deletes only some of its contents shows only
+            // those.
+            if case .rule(let rule) = match, let policy = rule.rule.contents {
+                let survey = ContentsSurvey.measure(policy, directory.path, now: now)
+                total = survey.bytes
+                children = survey.children
+            }
             if directory.path == devicesFolder {
                 for child in directory.children where child.isDirectory {
                     simulatorSizes[child.name] = child.bytes
                 }
             }
             guard total >= minimum else { continue }
-            let breakdown = Findings.breakdown(total: total, children: remainder?.children ?? directory.children)
+            let breakdown = Findings.breakdown(total: total, children: children)
             switch match {
             case .rule(let rule):
                 findings.append(Findings.rule(rule, path: directory.path, bytes: total, breakdown: breakdown))

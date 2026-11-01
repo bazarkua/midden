@@ -22,6 +22,10 @@ struct Rule: Sendable {
     var app: AppSource = .none
     /// Whether nothing inside is reported on its own.
     var claimsSubtree = true
+    /// For `removeContents`: which contents go, when not all of them may.
+    /// Engine-internal: the cleaner takes it from the rule it matches again
+    /// at clean time.
+    var contents: ContentsPolicy? = nil
 }
 
 struct RuleMatch: Sendable {
@@ -586,15 +590,22 @@ enum RuleCatalog {
             app: .wildcard),
 
         // MARK: Logs and Trash
+        // Files only, never folders: macOS doesn't recreate some of them.
+        // After another cleaner removed DiagnosticReports (owned by the
+        // _analyticsusers group), crash reports couldn't be saved:
+        // osanalyticshelper was denied creating the folder again.
         Rule(
             paths: ["Library/Logs"],
             category: .system, safety: .safe,
             title: "Logs", group: "Logs",
             explanation: """
-                Log files and crash reports written by apps. Apps start new logs as they run; \
-                you only lose the history, which matters when you're diagnosing a problem.
+                Log files and crash reports apps wrote more than 7 days ago. Midden deletes only \
+                those files and keeps every folder, because macOS doesn't recreate some of them, \
+                such as DiagnosticReports for crash reports. Newer files stay, so a recent crash \
+                report is still there to send; you lose only older history.
                 """,
-            action: .removeContents),
+            action: .removeContents,
+            contents: .agedFiles(minimumAge: 7 * 86_400)),
         Rule(
             paths: [".Trash"],
             category: .system, safety: .review,

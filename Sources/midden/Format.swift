@@ -77,7 +77,7 @@ enum Format {
     static func describe(_ action: CleanAction, home: String) -> String {
         switch action {
         case .removeDirectory: "delete the folder"
-        case .removeContents: "empty the folder"
+        case .removeContents: "delete what the explanation says inside the folder, keeping the folder"
         case .removeFile: "delete the file"
         case .run(let arguments):
             "run `" + arguments.map { argument in

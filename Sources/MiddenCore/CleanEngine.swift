@@ -52,25 +52,34 @@ struct CleanEngine {
 
     func plan(_ id: String) -> CleanPlan {
         switch validate(id) {
-        case .success(let finding):
-            return CleanPlan(id: id, finding: finding, refusal: nil)
+        case .success(let approved):
+            return CleanPlan(id: id, finding: approved.finding, refusal: nil)
         case .failure(let refusal):
             return CleanPlan(id: id, finding: refusal.finding, refusal: refusal.message)
         }
     }
 
     func clean(_ id: String) -> CleanResult {
-        let plan = plan(id)
-        guard let finding = plan.finding, plan.refusal == nil else {
-            return CleanResult(id: id, ok: false, message: plan.refusal ?? "Not recognized.")
+        let approved: Approved
+        switch validate(id) {
+        case .success(let found): approved = found
+        case .failure(let refusal): return CleanResult(id: id, ok: false, message: refusal.message)
         }
-        let failure = perform(finding)
+        let finding = approved.finding
+        let (failure, deleted) = perform(approved)
         // A trashed item still takes its space until the Trash is emptied.
         if finding.action == .moveToTrash {
             return CleanResult(id: id, ok: failure == nil, message: failure, movedToTrash: failure == nil)
         }
-        let freed = max(finding.bytes - Self.allocatedSize(finding.path), 0)
+        let freed = deleted ?? max(finding.bytes - Self.allocatedSize(finding.path), 0)
         return CleanResult(id: id, ok: failure == nil, message: failure, freedBytes: freed)
+    }
+
+    /// An item that passed every check, and how its contents are cleaned
+    /// when not all of them may go: taken from the rule it matched now.
+    struct Approved {
+        var finding: Finding
+        var contents: ContentsPolicy?
     }
 
     /// What is on disk at `path` now: 0 when it's gone.
@@ -86,12 +95,13 @@ struct CleanEngine {
         var finding: Finding?
     }
 
-    private func refuse(_ message: String, _ finding: Finding? = nil) -> Result<Finding, Refusal> {
+    private func refuse<T>(_ message: String, _ finding: Finding? = nil) -> Result<T, Refusal> {
         .failure(Refusal(message: message, finding: finding))
     }
 
-    func validate(_ id: String) -> Result<Finding, Refusal> {
+    func validate(_ id: String) -> Result<Approved, Refusal> {
         let finding: Finding
+        var contents: ContentsPolicy?
         if id.hasPrefix("sim:") {
             switch simulator(String(id.dropFirst(4))) {
             case .success(let found): finding = found
@@ -99,7 +109,7 @@ struct CleanEngine {
             }
         } else {
             switch fileSystemItem(id) {
-            case .success(let found): finding = found
+            case .success(let found): (finding, contents) = found
             case .failure(let refusal): return .failure(refusal)
             }
             barrier(.afterClaim, id)
@@ -113,7 +123,7 @@ struct CleanEngine {
         if let app = finding.app, let running = Apps.running(app) {
             return refuse("\(running) is running. Quit it first.", finding)
         }
-        return .success(finding)
+        return .success(Approved(finding: finding, contents: contents))
     }
 
     /// Why `path` can't be acted on as it is, or nil: it must exist, not be
@@ -147,7 +157,7 @@ struct CleanEngine {
         return info.st_mode & S_IFMT == expected ? nil : "It changed since Midden checked it."
     }
 
-    private func fileSystemItem(_ path: String) -> Result<Finding, Refusal> {
+    private func fileSystemItem(_ path: String) -> Result<(Finding, ContentsPolicy?), Refusal> {
         // The id must already be the canonical absolute path the scanner
         // reports: no `.` or `..` components, no doubled or trailing slashes.
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
@@ -180,7 +190,7 @@ struct CleanEngine {
         case .inside(let ancestor, _):
             return refuse("It's inside \(ancestor), which Midden treats as one item.")
         case .file(let match?, let entry, _):
-            return .success(Findings.file(match, path: path, entry: entry))
+            return .success((Findings.file(match, path: path, entry: entry), nil))
         case .file(nil, _, _), .directory(nil, _):
             return refuse("Midden doesn't recognize it as something it can clean.")
         case .directory(let match?, let dir):
@@ -194,26 +204,33 @@ struct CleanEngine {
                 {
                     bytes = remainder
                 }
-                return .success(Findings.rule(rule, path: path, bytes: bytes))
+                // Only what the policy deletes, measured now.
+                var breakdown: [Slice] = []
+                if let policy = rule.rule.contents {
+                    let survey = ContentsSurvey.measure(policy, path, now: Date())
+                    bytes = survey.bytes
+                    breakdown = Findings.breakdown(total: bytes, children: survey.children)
+                }
+                return .success((Findings.rule(rule, path: path, bytes: bytes, breakdown: breakdown), rule.rule.contents))
             case .buildFolder(let build):
-                return .success(Findings.buildFolder(build, path: path, bytes: bytes))
+                return .success((Findings.buildFolder(build, path: path, bytes: bytes), nil))
             case .worktree(let worktree):
                 let audit = makeAuditor().audit(worktree)
-                return .success(Findings.worktree(worktree, audit: audit, home: home, bytes: bytes))
+                return .success((Findings.worktree(worktree, audit: audit, home: home, bytes: bytes), nil))
             }
         }
     }
 
     /// Outside home, only a linked worktree of a repository inside home is
     /// accepted, and only when the link is proven both ways again now.
-    private func externalWorktree(_ path: String) -> Result<Finding, Refusal> {
+    private func externalWorktree(_ path: String) -> Result<(Finding, ContentsPolicy?), Refusal> {
         switch ExternalWorktrees.verify(path, home: home) {
         case .failure(let unproven):
             return refuse("It's outside your home folder and isn't a worktree of a repository in it: \(unproven.reason)")
         case .success(let worktree):
             let bytes = (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
             let audit = makeAuditor().audit(worktree)
-            return .success(Findings.worktree(worktree, audit: audit, home: home, bytes: bytes))
+            return .success((Findings.worktree(worktree, audit: audit, home: home, bytes: bytes), nil))
         }
     }
 
@@ -297,18 +314,27 @@ struct CleanEngine {
         return lstat(path, &info) == 0 ? info.st_dev : nil
     }
 
-    /// Returns nil on success, else what went wrong.
-    func perform(_ finding: Finding) -> String? {
+    /// Returns nil on success, else what went wrong, and the bytes deleted
+    /// when the action counted them itself (nil: measure what's left).
+    func perform(_ approved: Approved) -> (failure: String?, deleted: Int64?) {
+        let finding = approved.finding
         if case .manual = finding.action {} else {
             // Validation sized and audited the item, which can take a while:
             // a symlink swapped in above it meanwhile, or a disk mounted in
             // it, must not redirect what follows. This narrows the window to
             // the next few calls; it doesn't close it (see ARCHITECTURE.md).
-            if let refusal = Self.pathRefusal(finding.path) { return refusal }
-            if let refusal = Self.kindRefusal(finding) { return refusal }
-            if let refusal = volumeRefusal(finding) { return refusal }
+            if let refusal = Self.pathRefusal(finding.path) { return (refusal, nil) }
+            if let refusal = Self.kindRefusal(finding) { return (refusal, nil) }
+            if let refusal = volumeRefusal(finding) { return (refusal, nil) }
             barrier(.beforeDelete, finding.path)
         }
+        if case .removeContents = finding.action, let policy = approved.contents {
+            return ContentsSurvey.clean(policy, finding.path, home: home, now: Date())
+        }
+        return (performAction(finding), nil)
+    }
+
+    private func performAction(_ finding: Finding) -> String? {
         let fileManager = FileManager.default
         switch finding.action {
         case .manual(let instructions):

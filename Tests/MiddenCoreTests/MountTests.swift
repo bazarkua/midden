@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import MiddenCore
 
@@ -20,13 +21,17 @@ private let realDiskImagesRequested =
     && FileManager.default.isExecutableFile(atPath: "/usr/bin/hdiutil")
 
 /// A 20 MB APFS disk image attached at a folder, detached when released.
-private final class MountedDiskImage {
+private final class MountedDiskImage: Sendable {
     let mountPoint: String
     private let image: String
 
-    init(at mountPoint: String, imageFolder: TempDir) throws {
+    convenience init(at mountPoint: String, imageFolder: TempDir) throws {
+        try self.init(at: mountPoint, image: imageFolder.path("disk.dmg"))
+    }
+
+    init(at mountPoint: String, image: String) throws {
         self.mountPoint = mountPoint
-        image = imageFolder.path("disk.dmg")
+        self.image = image
         try FileManager.default.createDirectory(atPath: mountPoint, withIntermediateDirectories: true)
         try Self.hdiutil(["create", "-size", "20m", "-fs", "APFS", "-volname", "MiddenTest", image, "-quiet"])
         try Self.hdiutil(["attach", "-nobrowse", "-mountpoint", mountPoint, image, "-quiet"])
@@ -151,6 +156,42 @@ private final class MountedDiskImage {
             #expect(result.message?.contains(expected) == true, "\(result.message ?? "")")
             #expect(exists(cache + "/blob"))
         }
+    }
+
+    /// A disk mounted inside Logs after the cleaner's last mount check:
+    /// cleaning Logs opens each folder through its parent's descriptor and
+    /// never enters one on another device, so an old file on that disk
+    /// survives while old files beside it go.
+    @Test(.enabled(if: realDiskImagesRequested, "Attaches real disk images: run with MIDDEN_MOUNT_TESTS=1 from a terminal with access to removable volumes"))
+    func cleaningLogsNeverEntersADiskMountedAfterTheCheck() async throws {
+        let home = try TempDir("home")
+        let images = try TempDir("images")
+        let old = try home.write("Library/Logs/App/old.log", bytes: 10_000)
+        try home.touch("Library/Logs/App/old.log", daysAgo: 10)
+        let mountPoint = try home.mkdir("Library/Logs/mnt")
+        let image = images.path("disk.dmg")
+        let mounted = Mutex<MountedDiskImage?>(nil)
+        let failure = Mutex<String?>(nil)
+        var cleaner = cleaner(home)
+        cleaner.barrier = { stage, _ in
+            guard stage == .beforeDelete else { return }
+            do {
+                let disk = try MountedDiskImage(at: mountPoint, image: image)
+                let sentinel = disk.mountPoint + "/old-on-another-disk.log"
+                try Data(repeating: 1, count: 10_000).write(to: URL(fileURLWithPath: sentinel))
+                try FileManager.default.setAttributes(
+                    [.modificationDate: Date(timeIntervalSinceNow: -30 * 86_400)], ofItemAtPath: sentinel)
+                mounted.withLock { $0 = disk }
+            } catch {
+                failure.withLock { $0 = "\(error)" }
+            }
+        }
+        let result = try #require(await cleaner.clean([home.path("Library/Logs")]).results.first)
+        #expect(failure.withLock { $0 } == nil)
+        let disk = try #require(mounted.withLock { $0 }, "the disk wasn't mounted")
+        #expect(exists(disk.mountPoint + "/old-on-another-disk.log"))
+        #expect(!exists(old), "\(result)")
+        mounted.withLock { $0 = nil }
     }
 
     @Test func mountTableCheck() {
