@@ -1,14 +1,15 @@
 #!/bin/bash
 # Times Midden's scan next to a C scanner, du and find on one or more
-# folders, and checks that they agree on items and bytes.
+# folders, and checks that they agree on items, bytes and errors.
 #
 # Warm cache by default: every tool runs once unmeasured (which also fills
 # the cache and records its totals), then --runs measured rounds. A round
-# runs every tool once, always in the same order, so a change in machine
-# load hits all tools alike instead of one tool's runs.
+# runs every tool once; each round starts one tool later than the last, so
+# neither a change in machine load nor a tool's position in the order
+# favors one tool.
 #
 # Usage: Benchmarks/run.sh [options] DIR...
-#   --runs N        measured runs per tool (default 5)
+#   --runs N        measured runs per tool (default 7)
 #   --threads N     threads for the C scanner and midden-bench (default:
 #                   Midden's own default, the core count clamped to 4...12;
 #                   `midden scan` itself always uses its default)
@@ -21,30 +22,37 @@
 #                   no warm-up round. Asks for your password once.
 #
 # Tools:
-#   scan        midden scan --json, output to /dev/null: the full pipeline
-#   engine      midden-bench scan: the same scan without JSON output
-#   read        midden-bench read: the scan's reading phase only
-#               (walk + classification + space map records)
-#   classify    midden-bench classify: walk + classification
-#   walk        midden-bench walk: Midden's walker alone, N threads
-#   walk-1      the same on 1 thread
-#   c           Benchmarks/cscan, N threads, folders opened by full path
-#   c-1         the same on 1 thread
-#   c-openat    the C scanner opening each folder relative to its parent
-#   du          du -skx
-#   find        find -x DIR | wc -l
+#   scan         midden scan --json, output to /dev/null: the full pipeline
+#   engine       midden-bench scan: the same scan without writing JSON (it
+#                times encoding the JSON separately and prints that)
+#   read         midden-bench read: the scan's reading phase only
+#                (walk + classification + space map records)
+#   classify     midden-bench classify: walk + classification
+#   walk         midden-bench walk: Midden's walker alone, N threads
+#   walk-1       the same on 1 thread
+#   c            Benchmarks/cscan: getattrlistbulk, folders opened by path,
+#                N threads (the same strategy as Midden's walker)
+#   c-1          the same on 1 thread
+#   c-openat     the C scanner opening each folder relative to its parent
+#   c-readdir    the C scanner listing with readdir + fstatat, N threads
+#   c-readdir-1  the same on 1 thread
+#   du           du -skx
+#   find         find -x DIR | wc -l
 #
-# Writes results.md (medians, ranges, the totals check, machine
-# conditions), results.csv (every measured run) and raw/ (tool output).
+# Writes results.md (medians, spread, every run's time, the totals check,
+# machine conditions), results.csv (every measured run) and raw/ (each
+# tool's output, errors and rusage). User and system CPU come from
+# /usr/bin/time -l, which includes children the tool waited for (git, for
+# midden scan); peak RSS is that of the largest single process.
 # Needs only what macOS ships plus a Swift toolchain; bash 3.2 compatible.
 
 set -o pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
-all_tools="scan engine read classify walk walk-1 c c-1 c-openat du find"
+all_tools="scan engine read classify walk walk-1 c c-1 c-openat c-readdir c-readdir-1 du find"
 
-runs=5
+runs=7
 threads=
 tools=$all_tools
 label=
@@ -74,8 +82,10 @@ while [ $# -gt 0 ]; do
 done
 [ ${#dirs[@]} -gt 0 ] || die "name at least one folder to scan (see --help)"
 [ -z "$label" ] || [ ${#dirs[@]} -eq 1 ] || die "--label needs exactly one folder"
+tool_list=()
 for tool in $tools; do
     case " $all_tools " in *" $tool "*) ;; *) die "unknown tool $tool" ;; esac
+    tool_list[${#tool_list[@]}]=$tool
 done
 for dir in "${dirs[@]}"; do
     [ -d "$dir" ] || die "$dir is not a folder"
@@ -94,6 +104,7 @@ md="$out/results.md"
 
 # MARK: Build
 
+c_flags="-std=c11 -O3 -Wall -Wextra"
 echo "Building midden, midden-bench and the C scanner..." >&2
 (cd "$repo" && swift build -c release --product midden \
     && swift build -c release --product midden-bench) >"$out/raw/build.log" 2>&1 \
@@ -103,7 +114,7 @@ midden="$bin/midden"
 bench="$bin/midden-bench"
 cscan="$repo/.build/benchmarks/cscan"
 mkdir -p "$(dirname "$cscan")"
-clang -std=c11 -O3 -Wall -Wextra -o "$cscan" "$here/cscan/cscan.c" || die "clang failed"
+clang $c_flags -o "$cscan" "$here/cscan/cscan.c" || die "clang failed"
 
 if [ $cold -eq 1 ]; then
     echo "Cold cache runs call sudo purge before every measured run." >&2
@@ -117,33 +128,46 @@ fi
 run_tool() {
     local tool=$1 dir=$2 stdout=$3 rusage=$4
     case $tool in
-        scan) /usr/bin/time -l -o "$rusage" "$midden" scan --json --home "$dir" >"$stdout" ;;
-        engine) /usr/bin/time -l -o "$rusage" "$bench" scan "$dir" --threads "$threads" >"$stdout" ;;
-        read|classify|walk) /usr/bin/time -l -o "$rusage" "$bench" "$tool" "$dir" --threads "$threads" >"$stdout" ;;
-        walk-1) /usr/bin/time -l -o "$rusage" "$bench" walk "$dir" --threads 1 >"$stdout" ;;
-        c) /usr/bin/time -l -o "$rusage" "$cscan" --threads "$threads" "$dir" >"$stdout" ;;
-        c-1) /usr/bin/time -l -o "$rusage" "$cscan" --threads 1 "$dir" >"$stdout" ;;
-        c-openat) /usr/bin/time -l -o "$rusage" "$cscan" --threads "$threads" --openat "$dir" >"$stdout" ;;
-        du) /usr/bin/time -l -o "$rusage" du -skx "$dir" >"$stdout" ;;
-        find) /usr/bin/time -l -o "$rusage" sh -c 'find -x "$1" | wc -l' sh "$dir" >"$stdout" ;;
+        scan) timed "$rusage" "$midden" scan --json --home "$dir" >"$stdout" ;;
+        engine) timed "$rusage" "$bench" scan "$dir" --threads "$threads" >"$stdout" ;;
+        read|classify|walk) timed "$rusage" "$bench" "$tool" "$dir" --threads "$threads" >"$stdout" ;;
+        walk-1) timed "$rusage" "$bench" walk "$dir" --threads 1 >"$stdout" ;;
+        c) timed "$rusage" "$cscan" --threads "$threads" "$dir" >"$stdout" ;;
+        c-1) timed "$rusage" "$cscan" --threads 1 "$dir" >"$stdout" ;;
+        c-openat) timed "$rusage" "$cscan" --threads "$threads" --openat "$dir" >"$stdout" ;;
+        c-readdir) timed "$rusage" "$cscan" --threads "$threads" --readdir "$dir" >"$stdout" ;;
+        c-readdir-1) timed "$rusage" "$cscan" --threads 1 --readdir "$dir" >"$stdout" ;;
+        du) timed "$rusage" du -skx "$dir" >"$stdout" ;;
+        find) timed "$rusage" sh -c 'find -x "$1" | wc -l' sh "$dir" >"$stdout" ;;
     esac
 }
 
-# Prints "items bytes" from a tool's output; "-" where it doesn't say.
+# Runs a command under /usr/bin/time -l, writing the rusage to $1.
+timed() {
+    local rusage=$1
+    shift
+    /usr/bin/time -l -o "$rusage" "$@"
+}
+
+# Prints "items bytes errors" from a tool's output and its stderr; "-"
+# where the tool doesn't say. du and find report errors as stderr lines.
 totals() {
-    local tool=$1 file=$2
+    local tool=$1 file=$2 errors=$3
     case $tool in
         scan)
             if [ -s "$file" ]; then
                 echo "$(plutil -extract itemsScanned raw -o - "$file" 2>/dev/null || echo -)" \
-                    "$(plutil -extract bytesScanned raw -o - "$file" 2>/dev/null || echo -)"
+                    "$(plutil -extract bytesScanned raw -o - "$file" 2>/dev/null || echo -)" \
+                    "$(plutil -extract readErrors raw -o - "$file" 2>/dev/null || echo -)"
             else
-                echo "- -"
+                echo "- - -"
             fi ;;
-        du) awk '{ print "-", $1 * 1024; exit }' "$file" ;;
-        find) awk '{ print $1 - 1, "-"; exit }' "$file" ;;  # find also prints the root.
+        du) echo "- $(awk '{ print $1 * 1024; exit }' "$file") $(wc -l <"$errors" | tr -d ' ')" ;;
+        # find also prints the root.
+        find) echo "$(awk '{ print $1 - 1; exit }' "$file") - $(wc -l <"$errors" | tr -d ' ')" ;;
         *) tr ' ' '\n' <"$file" | awk -F= '$1 == "items" { i = $2 } $1 == "bytes" { b = $2 }
-            END { print (i == "" ? "-" : i), (b == "" ? "-" : b) }' ;;
+            $1 == "errors" { e = $2 }
+            END { print (i == "" ? "-" : i), (b == "" ? "-" : b), (e == "" ? "-" : e) }' ;;
     esac
 }
 
@@ -155,8 +179,8 @@ rusage_fields() {
         /peak memory footprint/ { peak = $1 }
         /instructions retired/ { instructions = $1 }
         /cycles elapsed/ { cycles = $1 }
-        END { print wall, user, sys, rss, peak, (instructions == "" ? "-" : instructions),
-            (cycles == "" ? "-" : cycles) }' "$1"
+        END { print wall, user, sys, rss, (peak == "" ? "-" : peak),
+            (instructions == "" ? "-" : instructions), (cycles == "" ? "-" : cycles) }' "$1"
 }
 
 load1() {
@@ -189,6 +213,13 @@ slug() {
     echo "$1" | tr -c 'A-Za-z0-9\n' '-'
 }
 
+# The file system holding a folder, as mount(8) describes it.
+filesystem() {
+    local device
+    device=$(df "$1" | awk 'NR == 2 { print $1 }')
+    mount | awk -v device="$device" '$1 == device { sub(/^[^(]*\(/, ""); sub(/\)$/, ""); print; exit }'
+}
+
 # MARK: Machine conditions
 
 conditions() {
@@ -202,17 +233,22 @@ conditions() {
         "$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo ?) efficiency cores" \
         "($ncpu logical), $(($(sysctl -n hw.memsize) / 1073741824)) GiB memory"
     echo "- macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
-    echo "- $(swift --version 2>&1 | grep -m1 -o 'Swift version [^ ]*'), $(clang --version | head -1)"
+    echo "- Swift: $(swift --version 2>&1 | grep -m1 -o 'Swift version [^ ]*'), swift build -c release." \
+        "C: $(clang --version | head -1), clang $c_flags"
     echo "- Engine commit: $commit"
+    echo "- getattrlistbulk buffer: 128 KB per thread, in Midden and in the C scanner"
+    echo "- Threads: $threads for midden-bench and the C scanner; midden scan uses its default" \
+        "(the core count clamped to 4...12)"
     echo "- Cache: $([ $cold -eq 1 ] && echo "cold (sudo purge before every measured run)" \
         || echo "warm (one unmeasured run of every tool first)")"
-    echo "- Runs: $runs measured per tool, interleaved round by round; threads: $threads" \
-        "(midden scan uses its default)"
+    echo "- Runs: $runs measured per tool. Round r starts at tool r, so the order rotates."
+    echo "- CPU times include children a tool waited for (git, for midden scan);" \
+        "peak RSS is the largest single process."
 }
 
 # MARK: Measuring
 
-echo "dataset,tool,run,wall_s,user_s,sys_s,max_rss_bytes,peak_footprint_bytes,instructions,cycles,items,bytes,load1,status" >"$csv"
+echo "dataset,tool,run,wall_s,user_s,sys_s,max_rss_bytes,peak_footprint_bytes,instructions,cycles,items,bytes,errors,load1,status" >"$csv"
 
 {
     echo "# Midden benchmark"
@@ -222,40 +258,48 @@ echo "dataset,tool,run,wall_s,user_s,sys_s,max_rss_bytes,peak_footprint_bytes,in
     conditions
 } >"$md"
 
+count=${#tool_list[@]}
 for dir in "${dirs[@]}"; do
     name=${label:-$(display "$dir")}
     tag=$(slug "$(basename "$dir")")
     echo "== $name" >&2
     load_start=$(uptime | sed 's/.*load averages*: //')
+    started=$(date '+%H:%M')
 
     if [ $cold -eq 0 ]; then
-        for tool in $tools; do
+        for tool in "${tool_list[@]}"; do
             echo "  warm-up: $tool" >&2
-            run_tool "$tool" "$dir" "$out/raw/$tag-$tool.out" "$out/raw/$tag-$tool.warm.time" \
-                2>"$out/raw/$tag-$tool.err"
+            run_tool "$tool" "$dir" "$out/raw/$tag-$tool.first.out" "$out/raw/$tag-$tool.first.time" \
+                2>"$out/raw/$tag-$tool.first.err"
         done
     fi
 
     run=1
     while [ $run -le "$runs" ]; do
-        for tool in $tools; do
+        k=0
+        while [ $k -lt $count ]; do
+            tool=${tool_list[$(((k + run - 1) % count))]}
+            k=$((k + 1))
             wait_for_load
             [ $cold -eq 1 ] && sudo purge
             load=$(load1)
-            stdout="$out/raw/$tag-$tool.run$run.out"
+            prefix="$out/raw/$tag-$tool.run$run"
+            stdout="$prefix.out"
             [ "$tool" = scan ] && stdout=/dev/null
-            # In a cold run the first output is the only one, so keep it.
-            [ "$tool" = scan ] && [ $cold -eq 1 ] && [ $run -eq 1 ] && stdout="$out/raw/$tag-$tool.out"
-            rusage="$out/raw/$tag-$tool.run$run.time"
-            run_tool "$tool" "$dir" "$stdout" "$rusage" 2>>"$out/raw/$tag-$tool.err"
-            status=$?
-            if [ "$stdout" = /dev/null ]; then
-                counted="- -"
-            else
-                counted=$(totals "$tool" "$stdout")
-                [ $run -eq 1 ] && [ ! -e "$out/raw/$tag-$tool.out" ] && cp "$stdout" "$out/raw/$tag-$tool.out"
+            # Without a warm-up round, the first run's output is the totals.
+            if [ $cold -eq 1 ] && [ $run -eq 1 ]; then
+                stdout="$out/raw/$tag-$tool.first.out"
             fi
-            fields=$(rusage_fields "$rusage")
+            run_tool "$tool" "$dir" "$stdout" "$prefix.time" 2>"$prefix.err"
+            status=$?
+            [ $cold -eq 1 ] && [ $run -eq 1 ] && cp "$prefix.err" "$out/raw/$tag-$tool.first.err" \
+                && cp "$prefix.time" "$out/raw/$tag-$tool.first.time"
+            if [ "$stdout" = /dev/null ]; then
+                counted="- - -"
+            else
+                counted=$(totals "$tool" "$stdout" "$prefix.err")
+            fi
+            fields=$(rusage_fields "$prefix.time")
             echo "$name,$tool,$run,$(echo "$fields" | tr ' ' ','),$(echo "$counted" | tr ' ' ','),$load,$status" \
                 | tr -d '\r' >>"$csv"
             echo "  run $run/$runs $tool: $(echo "$fields" | awk '{ print $1 }') s (load $load)" >&2
@@ -266,11 +310,11 @@ for dir in "${dirs[@]}"; do
 
     # MARK: Report for this folder
 
-    # Reference item count for items per second: the C scanner, else any tool.
+    # One item count for items per second: the C scanner's, else any tool's.
     reference=
-    for tool in c c-openat c-1 walk walk-1 find scan; do
-        [ -e "$out/raw/$tag-$tool.out" ] || continue
-        set -- $(totals "$tool" "$out/raw/$tag-$tool.out")
+    for tool in c c-1 c-openat c-readdir walk walk-1 find scan; do
+        [ -e "$out/raw/$tag-$tool.first.out" ] || continue
+        set -- $(totals "$tool" "$out/raw/$tag-$tool.first.out" "$out/raw/$tag-$tool.first.err")
         if [ "$1" != "-" ] && [ -n "$1" ]; then
             reference=$1
             break
@@ -281,11 +325,12 @@ for dir in "${dirs[@]}"; do
         echo
         echo "## $name"
         echo
+        echo "File system: $(filesystem "$dir"). Measured from $started to $(date '+%H:%M')."
         echo "Load average (1, 5, 15 min): $load_start at the start, $load_end at the end."
         echo
-        echo "| Tool | Wall, median | Wall, min–max | User CPU | System CPU | Peak RSS | Items/s |"
-        echo "|---|---:|---:|---:|---:|---:|---:|"
-        for tool in $tools; do
+        echo "| Tool | Wall, median | Wall, min–max | User CPU | System CPU | Peak RSS | Items/s | Every run, in order (s) |"
+        echo "|---|---:|---:|---:|---:|---:|---:|---|"
+        for tool in "${tool_list[@]}"; do
             awk -F, -v name="$name" -v tool="$tool" -v items="$reference" '
                 function median(values, n,    i, j, t) {
                     for (i = 2; i <= n; i++) for (j = i; j > 1 && values[j - 1] > values[j]; j--) {
@@ -295,53 +340,61 @@ for dir in "${dirs[@]}"; do
                 }
                 $1 == name && $2 == tool {
                     n++; wall[n] = $4; user[n] = $5; sys[n] = $6; rss[n] = $7
+                    every = every (n > 1 ? ", " : "") $4
                     if (n == 1 || $4 < low) low = $4
                     if (n == 1 || $4 > high) high = $4
                 }
                 END {
                     if (n == 0) exit
                     w = median(wall, n)
-                    printf "| %s | %.2f s | %.2f–%.2f s | %.2f s | %.2f s | %.0f MB | %s |\n",
+                    printf "| %s | %.2f s | %.2f–%.2f s | %.2f s | %.2f s | %.0f MB | %s | %s |\n",
                         tool, w, low, high, median(user, n), median(sys, n), median(rss, n) / 1e6,
-                        (items != "" && w > 0) ? sprintf("%.0fk", items / w / 1000) : "–"
+                        (items != "" && w > 0) ? sprintf("%.0fk", items / w / 1000) : "–", every
                 }' "$csv"
         done
         echo
         echo "Items/s divides one item count (${reference:-unknown}, from the C scanner when it ran)" \
-            "by each tool's median wall time, so the tools are compared on the same work."
+            "by each tool's median wall time, so every tool is credited with the same work."
         echo
         echo "### Totals"
         echo
         # Differences against the C scanner's first run, when it ran.
         base_items=-
         base_bytes=-
-        for tool in c c-openat c-1; do
-            if [ -e "$out/raw/$tag-$tool.out" ]; then
-                set -- $(totals "$tool" "$out/raw/$tag-$tool.out")
+        for tool in c c-1 c-openat c-readdir c-readdir-1; do
+            if [ -e "$out/raw/$tag-$tool.first.out" ]; then
+                set -- $(totals "$tool" "$out/raw/$tag-$tool.first.out" "$out/raw/$tag-$tool.first.err")
                 base_items=$1
                 base_bytes=$2
                 break
             fi
         done
-        echo "| Tool | Items | Items − C | Bytes allocated | Bytes − C |"
-        echo "|---|---:|---:|---:|---:|"
-        for tool in $tools; do
-            [ -e "$out/raw/$tag-$tool.out" ] || continue
-            set -- $(totals "$tool" "$out/raw/$tag-$tool.out")
+        echo "| Tool | Items | Items − C | Bytes allocated | Bytes − C | Errors |"
+        echo "|---|---:|---:|---:|---:|---:|"
+        for tool in "${tool_list[@]}"; do
+            [ -e "$out/raw/$tag-$tool.first.out" ] || continue
+            set -- $(totals "$tool" "$out/raw/$tag-$tool.first.out" "$out/raw/$tag-$tool.first.err")
             note=
             [ "$tool" = du ] && note=" (KB × 1024)"
             [ "$tool" = find ] && note=" (lines − 1)"
-            echo "$tool$note $1 $2 $base_items $base_bytes" | awk '{
-                n = NF; tool = $1; for (i = 2; i <= n - 4; i++) tool = tool " " $i
-                items = $(n - 3); bytes = $(n - 2); bi = $(n - 1); bb = $n
+            echo "$tool$note $1 $2 $3 $base_items $base_bytes" | awk '{
+                n = NF; tool = $1; for (i = 2; i <= n - 5; i++) tool = tool " " $i
+                items = $(n - 4); bytes = $(n - 3); errors = $(n - 2); bi = $(n - 1); bb = $n
                 di = (items == "-" || bi == "-") ? "" : items - bi
                 db = (bytes == "-" || bb == "-") ? "" : bytes - bb
-                printf "| %s | %s | %s | %s | %s |\n", tool, items, di, bytes, db
+                printf "| %s | %s | %s | %s | %s | %s |\n", tool, items, di, bytes, db, errors
             }'
         done
         echo
         echo "Totals come from each tool's first run. Item counts exclude the root folder;" \
-            "find prints it, so its line count is reduced by one. du -k prints 1024-byte units."
+            "find prints it, so its line count is reduced by one. du -k prints 1024-byte units." \
+            "Errors are folders a tool couldn't read: its own count, or stderr lines for du and find."
+        if [ -e "$out/raw/$tag-engine.first.out" ]; then
+            json=$(tr ' ' '\n' <"$out/raw/$tag-engine.first.out" | awk -F= '
+                $1 == "json_seconds" { s = $2 } $1 == "json_bytes" { b = $2 }
+                END { if (s != "") printf "%s s for %.1f MB", s, b / 1e6 }')
+            [ -n "$json" ] && echo "Encoding the report as JSON (engine, first run): $json."
+        fi
     } >>"$md"
 done
 
