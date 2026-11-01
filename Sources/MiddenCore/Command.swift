@@ -385,22 +385,116 @@ final class CommandChildren: Sendable {
         }
     }
 
-    /// Reaps `pid` when it exits, from a dispatch process source.
+    /// Reaps `pid` when it exits, through the process-wide reaper.
     static let watchExit: Watch = { pid, reaped in
-        let source = DispatchSource.makeProcessSource(
-            identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
-        let once = Mutex(false)
-        let reapIfExited: @Sendable () -> Void = {
-            var status: Int32 = 0
-            let result = waitpid(pid, &status, WNOHANG)
-            guard result == pid || (result < 0 && errno == ECHILD) else { return }
-            guard once.withLock({ done in defer { done = true }; return !done }) else { return }
-            source.cancel()
-            reaped()
-        }
-        source.setEventHandler(handler: reapIfExited)
+        ChildReaper.shared.watch(pid, reaped: reaped)
+    }
+}
+
+/// Reaps the lingering children handed to it, on one serial queue, with no
+/// thread waiting on any of them.
+///
+/// An exit notification doesn't mean the child can be reaped yet: the
+/// kernel sends NOTE_EXIT before the process becomes a zombie, and only
+/// once. So each child is checked when it's handed over, when its exit is
+/// reported, and on a timer that backs off from 10 ms to 1 s, until
+/// waitpid reaps it or says it isn't ours (ECHILD). Any other answer (0,
+/// or another error) means "try again later". The completion runs exactly
+/// once, and stops every further check. Command.run hands over at most its
+/// budget's worth of children, so the timers are bounded too.
+final class ChildReaper: Sendable {
+    /// waitpid(pid, WNOHANG): its result, and errno when it's negative.
+    typealias Wait = @Sendable (_ pid: pid_t) -> (result: pid_t, error: Int32)
+    /// Arms exit notifications for `pid`, calling `fired` on `queue` for
+    /// each; returns a function that disarms them.
+    typealias ExitEvents = @Sendable (
+        _ pid: pid_t, _ queue: DispatchQueue, _ fired: @escaping @Sendable () -> Void
+    ) -> (@Sendable () -> Void)
+
+    static let shared = ChildReaper()
+
+    private let queue = DispatchQueue(label: "midden.child-reaper")
+    private let wait: Wait
+    private let exitEvents: ExitEvents
+    let firstRetry: TimeInterval
+    let longestRetry: TimeInterval
+
+    init(
+        wait: @escaping Wait = ChildReaper.waitNoHang,
+        exitEvents: @escaping ExitEvents = ChildReaper.processSource,
+        firstRetry: TimeInterval = 0.01, longestRetry: TimeInterval = 1
+    ) {
+        self.wait = wait
+        self.exitEvents = exitEvents
+        self.firstRetry = firstRetry
+        self.longestRetry = longestRetry
+    }
+
+    static let waitNoHang: Wait = { pid in
+        var status: Int32 = 0
+        let result = waitpid(pid, &status, WNOHANG)
+        return (result, result < 0 ? errno : 0)
+    }
+
+    static let processSource: ExitEvents = { pid, queue, fired in
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
+        source.setEventHandler(handler: fired)
         source.resume()
-        // It may have exited before the source was armed.
-        reapIfExited()
+        return { source.cancel() }
+    }
+
+    /// One child being watched. Only touched on the reaper's queue.
+    private final class Tracked: @unchecked Sendable {
+        let pid: pid_t
+        let reaped: @Sendable () -> Void
+        var done = false
+        var delay: TimeInterval
+        var disarm: (@Sendable () -> Void)?
+        var timer: (any DispatchSourceTimer)?
+
+        init(pid: pid_t, delay: TimeInterval, reaped: @escaping @Sendable () -> Void) {
+            self.pid = pid
+            self.delay = delay
+            self.reaped = reaped
+        }
+    }
+
+    /// Watches `pid`, a child of this process, and calls `reaped` exactly
+    /// once, after waitpid has reaped it or reported ECHILD.
+    func watch(_ pid: pid_t, reaped: @escaping @Sendable () -> Void) {
+        let tracked = Tracked(pid: pid, delay: firstRetry, reaped: reaped)
+        queue.async { [self] in
+            tracked.disarm = exitEvents(pid, queue) { [self] in
+                // Reported exited: look now, and soon again if it isn't
+                // waitable yet.
+                tracked.delay = firstRetry
+                check(tracked)
+            }
+            // It may have exited before the notification was armed.
+            check(tracked)
+        }
+    }
+
+    /// On the queue: reap if possible, else schedule the next look.
+    private func check(_ tracked: Tracked) {
+        guard !tracked.done else { return }
+        let (result, error) = wait(tracked.pid)
+        if result == tracked.pid || (result < 0 && error == ECHILD) {
+            tracked.done = true
+            tracked.disarm?()
+            tracked.timer?.cancel()
+            tracked.disarm = nil
+            tracked.timer = nil
+            tracked.reaped()
+            return
+        }
+        // Not yet waitable, or a recoverable error: look again later.
+        tracked.timer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + tracked.delay)
+        timer.setEventHandler { [self] in check(tracked) }
+        tracked.timer = timer
+        tracked.delay = min(tracked.delay * 2, longestRetry)
+        timer.resume()
     }
 }
