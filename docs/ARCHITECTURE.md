@@ -22,7 +22,9 @@ The cost of a disk scan is system calls, not CPU. The classic approach is `readd
 
 `DirectoryReader` uses `getattrlistbulk(2)` instead. One call returns a batch of entries with everything the scanner needs: name, type, device, inode, link count, allocated size and modification time. The reader keeps one 128 KB buffer per thread and parses each record by its returned attribute set, because file-only attributes are missing for directories. If a file system doesn't support the call, it falls back to `readdir` plus `fstatat` for that directory only.
 
-On the test Mac (MacBook Pro, M4 Pro, 14 cores) a full scan of the home folder, 4.71 million items and 426 GB, takes about 20 seconds. `du -skx` over the same folder takes 102 seconds. The scan uses 2.3 s of user time and 136 s of system time across threads, so almost all of the work is the kernel reading metadata.
+On the test Mac (MacBook Pro, M4 Pro, 14 cores) a full scan of the home folder, 4.71 million items and 426 GB, takes about 20 seconds. `du -skx` over the same folder takes 102 seconds. Most of the walk's time goes to directory-listing system calls; a breakdown will come from the benchmark harness.
+
+The system call itself is not the difference. Apple's `fts`, which `du` walks with, uses `getattrlistbulk` too: an interposed counter saw it called for every folder of a test tree on macOS 27. Midden's edge comes from listing many folders at once on a bounded pool of threads, and its report does more than add up sizes.
 
 ### Walking on a fixed thread pool
 
