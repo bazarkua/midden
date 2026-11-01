@@ -29,7 +29,7 @@ import Testing
         Case(path: "Library/Caches/Homebrew", title: "Homebrew downloads", safety: .safe),
         Case(path: "Library/Caches/com.spotify.client", title: "{app} cache", safety: .safe,
              wildcard: "com.spotify.client"),
-        Case(path: "Library/Application Support/Slack/Code Cache", title: "{app} {name}",
+        Case(path: "Library/Application Support/Slack/Code Cache", title: "{app} web cache ({name})",
              safety: .safe, wildcard: "Slack"),
         Case(path: "Library/Logs", title: "Logs", safety: .safe),
         Case(path: ".Trash", title: "Trash", safety: .review),

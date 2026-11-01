@@ -297,7 +297,7 @@ enum RuleCatalog {
                 "Library/Application Support/*/CachedData",
             ],
             category: .appCaches, safety: .safe,
-            title: "{app} {name}", group: "{app}",
+            title: "{app} web cache ({name})", group: "{app}",
             explanation: """
                 Web cache of {app}. Apps built on Electron or Chromium, such as Slack, VS Code, \
                 Cursor or Discord, keep it to load faster and rebuild it as needed. Quit {app} \
