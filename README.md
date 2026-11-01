@@ -36,13 +36,13 @@ The disk on my Mac was 97% full. The biggest single cause was 117 old worktrees 
 | Package caches | npm, Gradle, Cargo, uv, pip, CocoaPods | Downloaded again when a project needs them |
 | App caches | `~/Library/Caches`, web caches of Electron and Chromium apps | Apps rebuild them. Midden asks you to quit the app first |
 | AI tool data | `~/.claude`, `~/.codex`, Cursor, Antigravity, Gemini CLI | Conversation history and settings are explained, never deleted |
-| Your files | Large files, Downloads, iPhone backups | Explained, never deleted |
+| Your files | Large files, installers, Downloads, iPhone backups | Explained and never deleted for you. Large files and installers go to the Trash when you choose, so they can be restored |
 
 Every finding gets one of three levels:
 
 - **Safe**: the tool or app that owns it recreates it by itself.
 - **Review**: deletable, but it costs something, such as a rebuild, a large download, or a folder you used this week.
-- **Info**: explained and left to you. Midden never deletes these.
+- **Info**: explained and left to you. Midden never deletes these on its own; your large files can go to the Trash when you choose.
 
 ## Before anything is deleted
 
@@ -74,7 +74,7 @@ swift build -c release
 .build/release/midden scan
 ```
 
-Give your terminal Full Disk Access (System Settings, Privacy & Security) if you want the scan to include the Trash, Mail and iPhone backups.
+Without Full Disk Access the scan leaves out the folders macOS guards with a permission prompt (Desktop, Documents, Downloads, iCloud Drive, other apps' data) instead of triggering a dialog for each one, and the report lists what it skipped. Give your terminal Full Disk Access (System Settings, Privacy & Security) to include them.
 
 ## Usage
 

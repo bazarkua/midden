@@ -83,9 +83,9 @@ Known locations live in `Rules.swift` as a static array of values: a path patter
 |---|---|---|
 | Safe | The owning tool or app recreates it by itself. | Yes |
 | Review | Deletable, but it costs something: a rebuild, a large download, or the folder was used in the last few days. | No |
-| Info | Explained, never deleted by Midden. Your own files, or data that must be removed inside the app that owns it. | Not deletable |
+| Info | Explained, never deleted on Midden's own judgment. Your own files, or data that must be removed inside the app that owns it. | No; your large files can be moved to the Trash by hand |
 
-Large files, Downloads and iPhone backups are always Info. Midden has no way to know if you still need them, so it says so and stops there.
+Large files, Downloads and iPhone backups are always Info. Midden has no way to know if you still need them, so it never picks them for you. When you do choose a large file or an installer, it goes to the Trash rather than being deleted: the one action in Midden you can undo without a backup. `CleanResult.movedToTrash` reports it, and such an item frees nothing until the Trash is emptied.
 
 ### Worktrees: proof before a verdict
 
@@ -133,7 +133,7 @@ The freed size of each item is measured from the item itself, before and after. 
 
 A scan once ran for 11 minutes on the test Mac. Every walker thread was blocked inside `open()`, waiting for a macOS privacy prompt that nobody answered. One pending prompt can stop a scan forever, so the walker now has two defenses.
 
-Without Full Disk Access, it skips folders that macOS protects: Mail, Messages, Safari, Photos libraries, Group Containers and Apple's app containers. The list comes from measurement: on the test Mac `du` failed on 538 folders, and 329 of the 338 protected app containers belonged to Apple. Skipped folders are counted as unreadable, so the report says what it didn't see.
+Without Full Disk Access, it skips folders that macOS protects. Some macOS refuses outright: Mail, Messages, Safari, Photos libraries. The list comes from measurement: on the test Mac `du` failed on 538 folders, and 329 of the 338 refused app containers belonged to Apple. Others macOS asks about with a permission dialog: Desktop, Documents, Downloads, iCloud Drive, the Music and TV libraries, and every other app's container. A scan that opened those would ask the user a question per folder, so it leaves them alone too. Skipped folders are counted as unreadable and listed in `ScanReport.skippedFolders`, so the report says exactly what it didn't see, and the app can ask once for Full Disk Access instead of a dozen times.
 
 For everything else there is a watchdog. Each worker publishes the folder it is listing and bumps a heartbeat after every batch from `getattrlistbulk`, so a huge folder that is still being read keeps beating while a blocked `open()` does not. After 5 seconds without a beat, a supervisor claims the folder with a compare-and-swap, counts it as unreadable, completes its parent's countdown and starts a replacement worker. If the stuck call returns later, its result loses the same compare-and-swap and is dropped. The walk never waits for it.
 
