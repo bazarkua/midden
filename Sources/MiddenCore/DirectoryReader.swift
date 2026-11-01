@@ -24,11 +24,29 @@ struct DirectoryEntry: Sendable, Hashable {
 struct DirectoryListing: Sendable {
     /// Entries read with all their metadata. Each appears once.
     var entries: [DirectoryEntry]
-    /// Why some entries are missing (an entry the file system couldn't
-    /// describe, or a read that failed partway). Nil when complete.
-    var error: POSIXError?
+    /// False when entries are missing: one the file system couldn't
+    /// describe, or a read that failed partway. Kept apart from `error`,
+    /// so no particular error can make a listing look complete.
+    private(set) var isComplete = true
+    /// The most telling reason it's incomplete: a refusal or an I/O error
+    /// rather than a folder that vanished meanwhile. Nil when complete.
+    private(set) var error: POSIXError?
 
-    var isComplete: Bool { error == nil }
+    init(entries: [DirectoryEntry] = []) {
+        self.entries = entries
+    }
+
+    mutating func markIncomplete(_ reason: POSIXError) {
+        isComplete = false
+        if error.map({ Self.isHarmless($0) && !Self.isHarmless(reason) }) ?? true {
+            error = reason
+        }
+    }
+
+    /// Gone, no longer a folder, or not downloaded.
+    static func isHarmless(_ error: POSIXError) -> Bool {
+        [.ENOENT, .ENOTDIR, .EDEADLK].contains(error.code)
+    }
 }
 
 /// Reads a directory with getattrlistbulk(2): one system call returns a batch
@@ -107,14 +125,14 @@ final class DirectoryReader {
     /// Never follows a symlink at `path` itself.
     func entries(atPath path: String) throws(POSIXError) -> [DirectoryEntry] {
         let listing = try listing(atPath: path)
-        if let error = listing.error { throw error }
+        if !listing.isComplete { throw listing.error ?? POSIXError(.EIO) }
         return listing.entries
     }
 
     /// Every entry of an open directory, or an error. The caller keeps `fd`.
     func entries(directory fd: Int32) throws(POSIXError) -> [DirectoryEntry] {
         let listing = try listing(directory: fd)
-        if let error = listing.error { throw error }
+        if !listing.isComplete { throw listing.error ?? POSIXError(.EIO) }
         return listing.entries
     }
 
@@ -174,7 +192,7 @@ final class DirectoryReader {
         request.dirattr = attrgroup_t(ATTR_DIR_ALLOCSIZE)
         request.fileattr = attrgroup_t(ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE)
 
-        var listing = DirectoryListing(entries: [], error: nil)
+        var listing = DirectoryListing()
         var firstCall = true
         var interrupted = 0
         var outOfMemory = 0
@@ -199,7 +217,7 @@ final class DirectoryReader {
                 }
                 // Nothing read: the listing failed. Otherwise keep what was read.
                 if firstCall { throw POSIXError(code) }
-                listing.error = POSIXError(code)
+                listing.markIncomplete(POSIXError(code))
                 return listing
             }
             firstCall = false
@@ -219,12 +237,12 @@ final class DirectoryReader {
         var offset = 0
         for _ in 0..<count {
             guard offset + header <= buffer.count else {
-                listing.error = listing.error ?? POSIXError(.EIO)
+                listing.markIncomplete(POSIXError(.EIO))
                 return false
             }
             let length = Int(base.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
             guard length >= header, offset + length <= buffer.count else {
-                listing.error = listing.error ?? POSIXError(.EIO)
+                listing.markIncomplete(POSIXError(.EIO))
                 return false
             }
             let record = UnsafeRawBufferPointer(start: base + offset, count: length)
@@ -232,7 +250,10 @@ final class DirectoryReader {
             case .success(let entry):
                 listing.entries.append(entry)
             case .failure(let error):
-                listing.error = listing.error ?? error
+                // An entry that vanished since the batch was read is just
+                // gone, as in the readdir fallback; any other error means
+                // something is missing.
+                if error.code != .ENOENT { listing.markIncomplete(error) }
             }
             offset += length
         }
@@ -330,7 +351,7 @@ final class DirectoryReader {
     /// the tests compare getattrlistbulk with.
     static func readdirEntries(directory fd: Int32) throws(POSIXError) -> [DirectoryEntry] {
         let listing = try DirectoryReader(bufferSize: 64).readdirListing(directory: fd)
-        if let error = listing.error { throw error }
+        if !listing.isComplete { throw listing.error ?? POSIXError(.EIO) }
         return listing.entries
     }
 
@@ -348,14 +369,20 @@ final class DirectoryReader {
             throw POSIXError(code)
         }
         defer { closedir(dir) }
-        var listing = DirectoryListing(entries: [], error: nil)
+        var listing = DirectoryListing()
         var seen = 0
+        var interrupted = 0
         while true {
             let (next, code) = calls.readdir(dir)
             guard let name = next else {
-                if code != 0 { listing.error = POSIXError(code) }
+                if code == EINTR, interrupted < Self.interruptRetries {
+                    interrupted += 1
+                    continue
+                }
+                if code != 0 { listing.markIncomplete(POSIXError(code)) }
                 break
             }
+            interrupted = 0
             seen += 1
             if seen % Self.fallbackBatch == 0 { onBatch?() }
             if name == "." || name == ".." { continue }
@@ -368,7 +395,7 @@ final class DirectoryReader {
             } while failure == EINTR && attempts < Self.interruptRetries
             if failure == ENOENT { continue }
             if failure != 0 {
-                listing.error = listing.error ?? POSIXError(failure)
+                listing.markIncomplete(POSIXError(failure))
                 continue
             }
             let kind = Self.kind(mode: info.st_mode)

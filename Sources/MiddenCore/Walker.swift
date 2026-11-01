@@ -513,10 +513,11 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         switch listing {
         case .success(let listed):
             // What was read is counted, once; what wasn't makes the folder
-            // a read error, so the total is visibly incomplete.
+            // a read error, so the total is visibly incomplete, whatever the
+            // error was.
             entries = listed.entries
             isComplete = listed.isComplete
-            if let error = listed.error, !Self.isBenign(error.code.rawValue) {
+            if !listed.isComplete {
                 unreadable.add(1, ordering: .relaxed)
             }
         case .failure(let error):

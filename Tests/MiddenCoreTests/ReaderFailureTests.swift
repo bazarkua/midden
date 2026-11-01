@@ -195,6 +195,67 @@ private func withDirectory<T>(_ path: String, _ body: (Int32) throws -> T) throw
         }
     }
 
+    /// An entry that vanished (ENOENT) is just gone; a later one that can't
+    /// be read (EACCES) makes the listing incomplete, and is what's
+    /// reported, not the harmless error that came first.
+    @Test func aRefusedEntryAfterAVanishedOneIsWhatCounts() throws {
+        let reader = DirectoryReader()
+        scripted(reader, Script([.records([
+            FakeRecord(name: "a"), FakeRecord(name: "gone", error: UInt32(ENOENT)),
+            FakeRecord(name: "refused", error: UInt32(EACCES)), FakeRecord(name: "c"),
+        ])]))
+        let listing = try withDirectory("/") { try reader.listing(directory: $0) }
+        #expect(listing.entries.map(\.name) == ["a", "c"])
+        #expect(!listing.isComplete)
+        #expect(listing.error?.code == .EACCES)
+    }
+
+    /// A refused entry, then the folder vanishing mid-read: still
+    /// incomplete, and the refusal isn't overwritten by the harmless error.
+    @Test func aTerminalBenignErrorDoesNotHideAnEarlierRefusal() throws {
+        let reader = DirectoryReader()
+        scripted(reader, Script([
+            .records([FakeRecord(name: "a"), FakeRecord(name: "refused", error: UInt32(EACCES))]),
+            .error(ENOENT),
+        ]))
+        let listing = try withDirectory("/") { try reader.listing(directory: $0) }
+        #expect(listing.entries.map(\.name) == ["a"])
+        #expect(!listing.isComplete)
+        #expect(listing.error?.code == .EACCES)
+    }
+
+    /// A vanished entry alone leaves the listing complete, as in the
+    /// readdir fallback.
+    @Test func aVanishedEntryAloneLeavesTheListingComplete() throws {
+        let reader = DirectoryReader()
+        scripted(reader, Script([.records([FakeRecord(name: "a"), FakeRecord(name: "gone", error: UInt32(ENOENT))])]))
+        let listing = try withDirectory("/") { try reader.listing(directory: $0) }
+        #expect(listing.entries.map(\.name) == ["a"])
+        #expect(listing.isComplete)
+    }
+
+    /// readdir interrupted partway is retried, not taken as the end.
+    @Test func readdirFallbackRetriesAnInterruption() throws {
+        let dir = try TempDir()
+        for index in 0..<10 { try dir.write("f\(index)") }
+        let reader = DirectoryReader()
+        var served = 0
+        var interrupted = false
+        let system = DirectoryReader.Calls.system
+        reader.calls.readdir = { dir in
+            served += 1
+            if served == 5, !interrupted {
+                interrupted = true
+                return (nil, EINTR)
+            }
+            return system.readdir(dir)
+        }
+        let listing = try withDirectory(dir.path) { try reader.readdirListing(directory: $0) }
+        #expect(interrupted)
+        #expect(listing.isComplete)
+        #expect(listing.entries.count == 10)
+    }
+
     @Test func anEntryWithAnErrorMakesTheListingIncomplete() throws {
         let reader = DirectoryReader()
         scripted(reader, Script([.records([
@@ -295,7 +356,7 @@ private func withDirectory<T>(_ path: String, _ body: (Int32) throws -> T) throw
             var listing = try reader.listing(atPath: listed)
             if listed == path {
                 listing.entries = Array(listing.entries.sorted { $0.name < $1.name }.prefix(keep))
-                listing.error = POSIXError(.EIO)
+                listing.markIncomplete(POSIXError(.EIO))
             }
             return listing
         }
@@ -309,7 +370,7 @@ private func withDirectory<T>(_ path: String, _ body: (Int32) throws -> T) throw
             var listing = try reader.listing(atPath: listed)
             if listed.hasSuffix("/partial") {
                 listing.entries = Array(listing.entries.sorted { $0.name < $1.name }.prefix(4))
-                listing.error = POSIXError(.EIO)
+                listing.markIncomplete(POSIXError(.EIO))
             }
             return listing
         }
@@ -319,6 +380,46 @@ private func withDirectory<T>(_ path: String, _ body: (Int32) throws -> T) throw
         #expect(result.items == 7)
         let fileBytes = Int64(12_288)  // 10,000 bytes in 4 KB blocks.
         #expect(result.totalBytes == 5 * fileBytes)
+    }
+
+    /// An incomplete listing counts as a read error whatever error it
+    /// carries, even one that alone would be harmless.
+    @Test func everyIncompleteListingIsAReadError() throws {
+        let dir = try TempDir()
+        try dir.write("partial/a", bytes: 10)
+        let walker = Walker(root: dir.path, delegate: SizeOnly()) { listed, reader throws(POSIXError) in
+            var listing = try reader.listing(atPath: listed)
+            if listed.hasSuffix("/partial") {
+                listing.markIncomplete(POSIXError(.ENOENT))
+            }
+            return listing
+        }
+        #expect(try walker.run().readErrors == 1)
+    }
+
+    /// Home's own listing incomplete: nothing in it is classified either,
+    /// not a cache under Library, not an installer in Downloads or at the
+    /// top of home.
+    @Test func nothingUnderAnIncompleteRootIsClassified() throws {
+        let home = try TempDir("home")
+        try home.write("Library/Caches/com.example.fake/blob", bytes: 2_000_000)
+        try home.write("Downloads/Setup.pkg", bytes: 100_000_000)
+        try home.write("Installer.dmg", bytes: 100_000_000)
+        let complete = ScanDelegate()
+        let full = try Walker(root: home.path, delegate: complete).run()
+        #expect(full.marked.contains { $0.path == home.path("Library/Caches/com.example.fake") })
+        #expect(complete.takeCollected().files.count == 2)
+
+        let delegate = ScanDelegate()
+        let root = home.path
+        let walk = try Walker(root: home.path, delegate: delegate) { listed, reader throws(POSIXError) in
+            var listing = try reader.listing(atPath: listed)
+            if listed == root { listing.markIncomplete(POSIXError(.EIO)) }
+            return listing
+        }.run()
+        #expect(walk.readErrors == 1)
+        #expect(walk.marked.isEmpty)
+        #expect(delegate.takeCollected().files.isEmpty)
     }
 
     /// A project whose listing came back incomplete may be missing exactly

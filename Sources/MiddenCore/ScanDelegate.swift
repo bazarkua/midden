@@ -78,12 +78,18 @@ final class ScanDelegate: WalkDelegate {
 
     func visit(_ dir: VisitedDirectory<Context>) -> Visit<Context, DirectoryMatch> {
         if dir.depth == 0 {
-            recordFiles(dir.entries, in: dir.path, scope: Scope())
-            // With part of home's listing missing, its marker files are unknown.
+            // Home's listing incomplete: the same rule as anywhere else,
+            // nothing in it or under it is classified.
+            var scope = Scope()
+            if dir.isComplete {
+                recordFiles(dir.entries, in: dir.path, scope: scope)
+            } else {
+                scope.claimed = true
+            }
             return Visit(
                 mark: nil,
                 childContext: Context(
-                    parentRelative: [], scope: Scope(),
+                    parentRelative: [], scope: scope,
                     parent: dir.isComplete ? ProjectFacts(entries: dir.entries) : .none),
                 unreadable: protectedFolders(in: [], dir.entries))
         }
