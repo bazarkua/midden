@@ -142,13 +142,15 @@ For everything else there is a watchdog. Each worker publishes the folder it is 
 A progress bar is only honest if it knows the total, and a scan doesn't know the total until it ends. The estimate works like this:
 
 - Reading folders is 85% of the bar, auditing worktrees 12%, simulators 1% and building the report 2%.
-- The reading share is the larger of two ratios: bytes seen over the expected bytes, and items seen over the expected items. The expected totals come from the previous scan. On a first scan they are the volume's used bytes and used inodes, which are upper bounds, so the bar jumps forward at the end of reading instead of stalling at 99%.
+- The reading share follows items seen over the expected items, because items arrive at a steady pace. Bytes seen over the expected bytes can only raise it, and only by 5% of the reading share per second, so one huge file is caught up over a few seconds instead of in one leap. The expected totals come from the previous scan. On a first scan they are the volume's used inodes and used bytes, which are upper bounds, so the bar jumps forward at the end of reading instead of stalling at 99%.
 - The worktree phase reports its count as data (`completed` of `total`), and the total stays fixed for the phase.
 - The fraction is a running maximum capped at 0.99, so it never goes backwards and never claims to be done early.
 
 One idea that measurement rejected: blending in the ratio of folders finished to folders found, which should approach 1 as the walk ends. In practice a depth-first walk finishes folders almost as fast as it finds them, so the ratio stayed between 0.96 and 0.999 for the whole scan and would have pushed the bar to 99% in the first second.
 
-Time left needs its own care. A single 30 GB file moves the byte ratio from 6% to 35% in one step, so an estimate paced by the bar said "3.5 s left" five seconds into a 27-second scan. Time left is paced by items instead, and the published value is the median of the last 9 raw estimates, allowed to grow by at most 10% (or 1 second) per second but to fall freely. Before this, one real scan showed 78, 10, 199, 19 and 35 seconds in a row. After it, the same Mac counted down steadily from 18 seconds, and the largest single increase was 0.4 seconds.
+Time left needs its own care. A single 30 GB file moves the byte ratio from 6% to 35% in one step, so an estimate paced by the bar said "3.5 s left" five seconds into a 27-second scan. Time left is paced by items instead, and the published value is the median of the last 9 raw estimates, allowed to grow by at most 10% (or 1 second) per second but to fall freely. Before this, one real scan showed 78, 10, 199, 19 and 35 seconds in a row. After it, the same Mac counted down steadily from 18 seconds, and the largest single increase was 0.4 seconds. The bar itself now rises by at most 6% in any second of reading, down from a 19% jump.
+
+The worktree phase is harder, because worktrees outside home take far longer to size than the rest. A percentile of finished items' durations said under 2 seconds while 7 to 9 remained, since the quick ones finish first. The phase's own throughput, time spent divided by items done, fits the measured traces better, and the estimate never drops below half of what the slowest running item has taken so far. It is still off by up to 2x on this Mac, which is the honest limit of a count-based estimate for items this uneven.
 
 ## 6. The space map
 
@@ -174,7 +176,9 @@ There are no third-party dependencies, including for argument parsing.
 
 ## Testing
 
-`swift test` runs 85 tests against real file systems in temp folders:
+`swift test` runs 87 tests against real file systems in temp folders. Every git command in the tests runs with the machine's git configuration switched off and git's automatic background maintenance disabled. Without that, a `git commit` in a test sometimes left `git maintenance` running in the worktree for a few milliseconds, and the cleaner correctly refused to remove a worktree a program was working in. A probe measured it: 12 of 80 commits left such a process behind with maintenance on, 0 of 80 with it off.
+
+The tests cover:
 
 - the directory reader against `lstat` for symlinks, sparse files, Unicode names and a directory large enough to need several bulk calls
 - scanner totals against `du -sk`, hard links, symlinks
