@@ -106,8 +106,9 @@ final class TempDir {
 
 extension ScanOptions {
     /// Options for scanning a fake home. Full Disk Access is stated rather
-    /// than probed: a fake home has none of the folders the probe lists,
-    /// and an inconclusive probe means no access.
+    /// than probed, so tests don't depend on this Mac's setting. (A fake
+    /// home outside the account's real one has nothing protected in it
+    /// either way.)
     static func fakeHome(_ home: TempDir, minimumBytes: Int64 = 50_000_000) -> ScanOptions {
         var options = ScanOptions(home: home.url, minimumBytes: minimumBytes)
         options.fullDiskAccess = true

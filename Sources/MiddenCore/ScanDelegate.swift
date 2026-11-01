@@ -22,6 +22,12 @@ final class ScanDelegate: WalkDelegate {
 
     /// Skip privacy-protected folders: Full Disk Access is missing.
     let skipProtected: Bool
+    /// The account home whose folders macOS protects. Protection goes by a
+    /// folder's real location, so it doesn't depend on where the scan began.
+    let accountHome: String?
+    /// The scan's root, set when it's visited, to report skipped folders
+    /// relative to it.
+    private let scanRoot = Mutex<String?>(nil)
     private let fileHits = Mutex<[FileHit]>([])
     private let repositories = Mutex<[String]>([])
     private let skippedPaths = Mutex<[String]>([])
@@ -40,8 +46,9 @@ final class ScanDelegate: WalkDelegate {
         }
     }
 
-    init(skipProtected: Bool = false) {
+    init(skipProtected: Bool = false, accountHome: String? = nil) {
         self.skipProtected = skipProtected
+        self.accountHome = accountHome
     }
 
     struct Collected {
@@ -62,11 +69,16 @@ final class ScanDelegate: WalkDelegate {
             skippedFolders: skipped)
     }
 
-    private func protectedFolders(in relative: [String]?, _ entries: [DirectoryEntry]) -> [String] {
-        guard skipProtected, let relative else { return [] }
+    /// Protected subfolders of the folder at `path` to skip, by where they
+    /// are relative to the account's home.
+    private func protectedFolders(of path: String, _ entries: [DirectoryEntry]) -> [String] {
+        guard skipProtected, let accountHome,
+            let relative = PrivacyProtected.relative(path, to: accountHome)
+        else { return [] }
         let names = PrivacyProtected.skipped(in: relative, entries: entries)
         if !names.isEmpty {
-            let prefix = relative.isEmpty ? "" : relative.joined(separator: "/") + "/"
+            let root = scanRoot.withLock { $0 } ?? path
+            let prefix = path == root ? "" : String(path.dropFirst(root.count + 1)) + "/"
             skippedPaths.withLock { $0.append(contentsOf: names.map { prefix + $0 }) }
         }
         return names
@@ -78,6 +90,7 @@ final class ScanDelegate: WalkDelegate {
 
     func visit(_ dir: VisitedDirectory<Context>) -> Visit<Context, DirectoryMatch> {
         if dir.depth == 0 {
+            scanRoot.withLock { $0 = dir.path }
             // Home's listing incomplete: the same rule as anywhere else,
             // nothing in it or under it is classified.
             var scope = Scope()
@@ -91,7 +104,7 @@ final class ScanDelegate: WalkDelegate {
                 childContext: Context(
                     parentRelative: [], scope: scope,
                     parent: dir.isComplete ? ProjectFacts(entries: dir.entries) : .none),
-                unreadable: protectedFolders(in: [], dir.entries))
+                unreadable: protectedFolders(of: dir.path, dir.entries))
         }
         let context = dir.context
         if dir.name == ".git", dir.entries.contains(where: { $0.name == "worktrees" && $0.kind == .directory }) {
@@ -101,7 +114,7 @@ final class ScanDelegate: WalkDelegate {
         let relative = context.parentRelative.map { $0 + [dir.name] }
         if context.scope.claimed {
             return Visit(
-                mark: nil, childContext: context, unreadable: protectedFolders(in: relative, dir.entries))
+                mark: nil, childContext: context, unreadable: protectedFolders(of: dir.path, dir.entries))
         }
         // Part of the listing is missing: what's absent (a `.git` file, a
         // marker, a newer file) can't count as evidence, so neither this
@@ -116,7 +129,7 @@ final class ScanDelegate: WalkDelegate {
                     parentRelative: relative.flatMap { $0.count < RuleCatalog.maxDepth ? $0 : nil },
                     scope: inner, parent: .none),
                 excluded: Classifier.excludedChildren(of: relative),
-                unreadable: protectedFolders(in: relative, dir.entries))
+                unreadable: protectedFolders(of: dir.path, dir.entries))
         }
         let (match, inner) = Classifier.classify(DirectoryFacts(
             path: dir.path, name: dir.name, relative: relative, scope: context.scope,
@@ -131,7 +144,7 @@ final class ScanDelegate: WalkDelegate {
         return Visit(
             mark: match, childContext: childContext,
             excluded: Classifier.excludedChildren(of: relative),
-            unreadable: protectedFolders(in: relative, dir.entries))
+            unreadable: protectedFolders(of: dir.path, dir.entries))
     }
 
     private func recordFiles(_ entries: [DirectoryEntry], in path: String, scope: Scope) {

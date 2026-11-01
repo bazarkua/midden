@@ -22,6 +22,9 @@ public struct ScanOptions: Sendable {
     var worktreeActiveWindow: TimeInterval = 7 * 86_400
     /// Whether Full Disk Access is granted; nil asks the system.
     var fullDiskAccess: Bool?
+    /// The account home whose folders macOS protects; nil is the real one.
+    /// Separate from `home`, which can be any folder.
+    var privacyHome: String?
 
     public init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,

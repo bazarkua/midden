@@ -3,6 +3,16 @@ import Synchronization
 
 enum System {
     /// The path with symlinks resolved (on macOS /var is /private/var).
+    /// The account's real home folder, from the user database: inside the
+    /// App Sandbox, NSHomeDirectory() is the app's container instead.
+    static func accountHome() -> String {
+        var home = NSHomeDirectory()
+        if let entry = getpwuid(getuid()), let directory = entry.pointee.pw_dir {
+            home = String(cString: directory)
+        }
+        return (try? canonicalPath(home)) ?? home
+    }
+
     static func canonicalPath(_ path: String) throws(POSIXError) -> String {
         guard let resolved = realpath(path, nil) else { throw POSIXError(errno) }
         defer { free(resolved) }

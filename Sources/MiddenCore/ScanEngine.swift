@@ -34,8 +34,18 @@ struct ScanEngine {
         // Without Full Disk Access, protected folders are skipped rather than
         // opened: opening some of them waits on a permission prompt. The probe
         // itself gets a deadline for the same reason.
-        let fullDiskAccess = options.fullDiskAccess ?? FullDiskAccess.isGranted(home: URL(fileURLWithPath: home))
-        let delegate = ScanDelegate(skipProtected: !fullDiskAccess)
+        // Access is a property of this process, probed on the account's real
+        // home, whatever folder is scanned; and protected folders are
+        // recognized by where they are in that home.
+        let accountHome = options.privacyHome ?? System.accountHome()
+        let fullDiskAccess = options.fullDiskAccess
+            ?? FullDiskAccess.isGranted(home: URL(fileURLWithPath: accountHome))
+        // Starting inside a protected folder would open it, and wait on the
+        // prompt the skipping exists to avoid.
+        if !fullDiskAccess, PrivacyProtected.covers(home, accountHome: accountHome) {
+            throw MiddenError.unreadable(path: home, code: EPERM)
+        }
+        let delegate = ScanDelegate(skipProtected: !fullDiskAccess, accountHome: accountHome)
         let walk: WalkResult<DirectoryMatch>
         do {
             estimator.begin(.reading)

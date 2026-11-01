@@ -52,6 +52,8 @@ import Testing
 
         var options = ScanOptions(home: home.url, minimumBytes: 1)
         options.fullDiskAccess = false
+        // This fake home stands in for the account's own.
+        options.privacyHome = home.path
         let without = try await Scanner(options: options).scan()
         #expect(without.needsFullDiskAccess)
         #expect(without.skippedWithoutFullDiskAccess == 5)
@@ -80,6 +82,67 @@ import Testing
         #expect(with.readErrors == 1)
         #expect(with.unreadableCount == 1)
         #expect(with.bytesScanned == total)
+    }
+}
+
+@Suite struct ProtectedLocationTests {
+    /// A folder with ordinary Desktop, Documents and Downloads folders, as
+    /// `midden scan --home <any folder>` might get.
+    private func arbitraryRoot() throws -> TempDir {
+        let root = try TempDir("project-tree")
+        try root.write("Desktop/notes.txt", bytes: 10_000)
+        try root.write("Documents/spec.md", bytes: 10_000)
+        try root.write("Downloads/Setup.pkg", bytes: 100_000_000)
+        return root
+    }
+
+    /// Only the account's own Desktop, Documents and Downloads are
+    /// protected. Without Full Disk Access, the same names anywhere else
+    /// were skipped as if they were.
+    @Test func foldersNamedLikeProtectedOnesElsewhereAreScanned() async throws {
+        let root = try arbitraryRoot()
+        let account = try TempDir("account")
+        var options = ScanOptions(home: root.url, minimumBytes: 1)
+        options.fullDiskAccess = false
+        options.privacyHome = account.path
+        let report = try await Scanner(options: options).scan()
+        #expect(report.skippedFolders.isEmpty, "\(report.skippedFolders)")
+        #expect(report.skippedWithoutFullDiskAccess == 0)
+        #expect(report.findings.contains { $0.path == root.path("Downloads/Setup.pkg") })
+    }
+
+    /// The default path, with nothing forced: the real account is probed,
+    /// and a folder outside it has nothing protected in it, whatever the
+    /// answer.
+    @Test func theDefaultPathProbesTheRealAccount() async throws {
+        let root = try arbitraryRoot()
+        let report = try await Scanner(options: ScanOptions(home: root.url, minimumBytes: 1)).scan()
+        #expect(report.skippedFolders.isEmpty, "\(report.skippedFolders)")
+        #expect(report.findings.contains { $0.path == root.path("Downloads/Setup.pkg") })
+    }
+
+    /// Rooted inside a protected location, without Full Disk Access, the
+    /// scan doesn't open it (that would raise the prompt it exists to
+    /// avoid). Rooted in a folder that holds protected ones, it skips those
+    /// by where they really are.
+    @Test func scansRootedInsideTheAccountFollowTheAccountsLocations() async throws {
+        let account = try TempDir("account")
+        try account.write("Documents/project/main.swift", bytes: 10_000)
+        try account.write("Library/Mail/V10/mail.emlx", bytes: 10_000)
+        try account.write("Library/Logs/app.log", bytes: 10_000)
+        var options = ScanOptions(home: account.url.appendingPathComponent("Documents/project"), minimumBytes: 1)
+        options.fullDiskAccess = false
+        options.privacyHome = account.path
+        await #expect(throws: MiddenError.unreadable(path: account.path("Documents/project"), code: EPERM)) {
+            try await Scanner(options: options).scan()
+        }
+
+        options.home = account.url.appendingPathComponent("Library")
+        let library = try await Scanner(options: options).scan()
+        #expect(library.skippedFolders == ["Mail"])
+        options.fullDiskAccess = true
+        let granted = try await Scanner(options: options).scan()
+        #expect(granted.skippedFolders.isEmpty)
     }
 }
 

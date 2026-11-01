@@ -83,26 +83,44 @@ enum PrivacyProtected {
         "Pictures/Photo Booth Library",
     ]
 
-    /// Subfolders of a folder (path components relative to home) to skip
-    /// without Full Disk Access.
+    /// Subfolders of a folder (path components relative to the account's
+    /// home) to skip without Full Disk Access.
     static func skipped(in relative: [String], entries: [DirectoryEntry]) -> [String] {
-        let prefix = relative.isEmpty ? "" : relative.joined(separator: "/") + "/"
-        return entries.compactMap { entry in
-            guard entry.kind == .directory else { return nil }
-            let name = entry.name
-            switch relative {
-            // Other apps' data. 147 of 149 group containers, and 329 of 338
-            // refused containers were Apple's; since macOS 14 reading any
-            // other app's container can also ask for permission, so all of
-            // them wait for Full Disk Access.
-            case ["Library", "Group Containers"], ["Library", "Containers"]:
-                return name
-            case ["Pictures"] where name.lowercased().hasSuffix(".photoslibrary"):
-                return name
-            default:
-                let path = prefix + name
-                return folders.contains(path) || prompting.contains(path) ? name : nil
-            }
+        entries.compactMap { entry in
+            entry.kind == .directory && isProtected(entry.name, in: relative) ? entry.name : nil
         }
+    }
+
+    /// Whether the folder `name` inside `parent` (components relative to
+    /// the account's home) is protected.
+    static func isProtected(_ name: String, in parent: [String]) -> Bool {
+        switch parent {
+        // Other apps' data. 147 of 149 group containers, and 329 of 338
+        // refused containers were Apple's; since macOS 14 reading any
+        // other app's container can also ask for permission, so all of
+        // them wait for Full Disk Access.
+        case ["Library", "Group Containers"], ["Library", "Containers"]:
+            return true
+        case ["Pictures"] where name.lowercased().hasSuffix(".photoslibrary"):
+            return true
+        default:
+            let path = (parent + [name]).joined(separator: "/")
+            return folders.contains(path) || prompting.contains(path)
+        }
+    }
+
+    /// Components of `path` below the account's home, or nil when it isn't
+    /// inside it. Protection follows where a folder really is, not where a
+    /// scan started: `Documents` in any other folder is just a folder.
+    static func relative(_ path: String, to accountHome: String) -> [String]? {
+        if path == accountHome { return [] }
+        guard path.hasPrefix(accountHome + "/") else { return nil }
+        return path.dropFirst(accountHome.count + 1).split(separator: "/").map(String.init)
+    }
+
+    /// Whether `path` is a protected folder or inside one.
+    static func covers(_ path: String, accountHome: String) -> Bool {
+        guard let components = relative(path, to: accountHome) else { return false }
+        return components.indices.contains { isProtected(components[$0], in: Array(components[..<$0])) }
     }
 }
