@@ -127,7 +127,7 @@ enum Classifier {
             inner.claimed = true
             return (nil, inner)
         }
-        if let relative = dir.relative, var match = RuleCatalog.match(relative) {
+        if let relative = dir.relative, var match = RuleCatalog.match(relative, folder: dir) {
             if RuleCatalog.hasNestedRules(below: relative) {
                 match.isContainer = true
                 inner.owned = true

@@ -31,6 +31,19 @@ struct Rule: Sendable {
     /// processes after the scan and again when cleaning; while a program
     /// uses it, or the processes can't all be read, it's Info.
     var checkInUse = false
+    /// What the folder itself must show for the rule to apply; when it
+    /// doesn't, the next matching rule does.
+    var requires: Requirement? = nil
+
+    enum Requirement: Sendable {
+        /// A Chromium profile folder: a `Local State` file, or the `mcp-`
+        /// prefix Playwright MCP gives its profiles.
+        case browserProfile
+    }
+}
+
+extension Rule.Requirement {
+    func isMet(by folder: DirectoryFacts) -> Bool { RuleCatalog.isMet(self, by: folder) }
 }
 
 struct RuleMatch: Sendable {
@@ -466,6 +479,20 @@ enum RuleCatalog {
             action: .removeDirectory),
         Rule(
             paths: [".cache/*"],
+            category: .appCaches, safety: .review,
+            title: "Browser profile ({name})", group: "{name}",
+            explanation: """
+                A Chromium browser profile (it has a Local State file) kept in ~/.cache, \
+                usually by a tool that drives a browser. Midden doesn't know its owner. \
+                Deleting it signs that browser out of every site and loses its cookies, \
+                history and saved site data. Quit the browser, and any agent or tool that \
+                drives it, first.
+                """,
+            action: .removeDirectory,
+            checkInUse: true,
+            requires: .browserProfile),
+        Rule(
+            paths: [".cache/*"],
             category: .packageCaches, safety: .review,
             title: "~/.cache/{name}", group: "{name}",
             explanation: """
@@ -475,15 +502,57 @@ enum RuleCatalog {
             action: .removeDirectory),
 
         // MARK: App caches
+        // Playwright downloads browsers into ~/Library/Caches/ms-playwright.
+        // Playwright MCP keeps persistent, signed-in profiles there too, as
+        // mcp-<channel>-<workspace hash> (its README's "User profile"), or
+        // in ms-playwright-mcp (seen on a Mac). Profiles aren't caches.
         Rule(
             paths: ["Library/Caches/ms-playwright"],
-            category: .appCaches, safety: .review,
-            title: "Playwright browsers", group: "Playwright",
+            category: .appCaches, safety: .info,
+            title: "Playwright", group: "Playwright",
             explanation: """
-                Browsers Playwright downloaded to run tests. Run `npx playwright install` \
+                Playwright's folder: the browsers it downloaded to run tests and, if you use \
+                Playwright MCP, the browser profiles it keeps signed in. Each is listed \
+                separately, so Midden never deletes this folder as a whole.
+                """,
+            action: .manual("Clean the browsers and profiles listed separately.")),
+        Rule(
+            paths: ["Library/Caches/ms-playwright/*", "Library/Caches/ms-playwright-mcp"],
+            category: .appCaches, safety: .review,
+            title: "Playwright MCP browser profile ({name})", group: "Playwright",
+            explanation: """
+                A browser profile Playwright MCP keeps so its browser stays signed in between \
+                sessions, with cookies, saved logins and site data. It isn't a browser download. \
+                Deleting it signs that browser out of every site and loses its cookies, \
+                history and saved site data. Quit the browser, and any agent or tool that \
+                drives it, first.
+                """,
+            action: .removeDirectory,
+            checkInUse: true,
+            requires: .browserProfile),
+        Rule(
+            paths: ["Library/Caches/ms-playwright-mcp"],
+            category: .appCaches, safety: .review,
+            title: "Playwright MCP browser profiles", group: "Playwright",
+            explanation: """
+                Browser profiles Playwright MCP keeps so its browser stays signed in between \
+                sessions, one folder per profile, with cookies, saved logins and site data. \
+                They aren't browser downloads. Deleting them signs that browser out of every \
+                site and loses its cookies, history and saved site data. Quit the browser, and \
+                any agent or tool that drives it, first.
+                """,
+            action: .removeDirectory,
+            checkInUse: true),
+        Rule(
+            paths: ["Library/Caches/ms-playwright/*"],
+            category: .appCaches, safety: .review,
+            title: "Playwright browser ({name})", group: "Playwright",
+            explanation: """
+                A browser Playwright downloaded to run tests. Run `npx playwright install` \
                 before your next test run.
                 """,
-            action: .removeDirectory),
+            action: .removeDirectory,
+            checkInUse: true),
         Rule(
             paths: ["Library/Caches/Homebrew"],
             category: .appCaches, safety: .safe,
@@ -648,6 +717,23 @@ enum RuleCatalog {
         browserCache("Library/Caches/Vivaldi", AppHint(name: "Vivaldi", bundleID: "com.vivaldi.Vivaldi")),
         browserCache("Library/Caches/Arc/User Data", AppHint(name: "Arc", bundleID: "company.thebrowser.Browser")),
         browserCache("Library/Caches/Dia/User Data", AppHint(name: "Dia")),
+        // A browser profile elsewhere in Caches, e.g. one an agent was
+        // started with through --user-data-dir.
+        Rule(
+            paths: ["Library/Caches/*"],
+            category: .appCaches, safety: .review,
+            title: "Browser profile ({name})", group: "{app}",
+            explanation: """
+                A Chromium browser profile (it has a Local State file) kept in your Caches \
+                folder, by {app} or by a tool that drives a browser. Midden doesn't know its \
+                owner. Deleting it signs that browser out of every site and loses its cookies, \
+                history and saved site data. Quit the browser, and any agent or tool that \
+                drives it, first.
+                """,
+            action: .removeDirectory,
+            app: .wildcard,
+            checkInUse: true,
+            requires: .browserProfile),
         Rule(
             paths: ["Library/Caches/*"],
             category: .appCaches, safety: .review,
@@ -778,9 +864,14 @@ enum RuleCatalog {
 
     /// The first rule matching a directory, given its path components
     /// relative to the home folder.
-    static func match(_ relative: [String]) -> RuleMatch? {
+    /// - Parameter folder: the folder's own facts, for rules that require
+    ///   something of it. Without them those rules don't apply.
+    static func match(_ relative: [String], folder: DirectoryFacts? = nil) -> RuleMatch? {
         guard !relative.isEmpty, relative.count <= maxDepth else { return nil }
         patterns: for pattern in patterns where pattern.components.count == relative.count {
+            if let requirement = pattern.rule.requires {
+                guard let folder, requirement.isMet(by: folder) else { continue patterns }
+            }
             var wildcard: String?
             for (expected, actual) in zip(pattern.components, relative) {
                 if expected == "*" {
@@ -793,6 +884,15 @@ enum RuleCatalog {
             return RuleMatch(rule: pattern.rule, wildcard: wildcard)
         }
         return nil
+    }
+
+    /// Whether the folder shows what a rule requires of it.
+    static func isMet(_ requirement: Rule.Requirement, by folder: DirectoryFacts) -> Bool {
+        switch requirement {
+        case .browserProfile:
+            folder.name.hasPrefix("mcp-")
+                || folder.entries.contains { $0.name == "Local State" && $0.kind == .file }
+        }
     }
 
     /// Folders macOS itself keeps in ~/Library/Caches and Application

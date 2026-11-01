@@ -109,6 +109,76 @@ func runScript(_ script: String, from directory: String) throws -> Process {
         #expect(!ProcessUsage.mentions("/private" + path, path))
     }
 
+    // MARK: Playwright MCP
+
+    /// Makes a Chromium profile folder: what a browser started with
+    /// `--user-data-dir` writes.
+    private func makeProfile(_ home: TempDir, _ relative: String) throws {
+        try home.write(relative + "/Local State", text: "{}")
+        try home.write(relative + "/Default/Cookies", bytes: 50_000)
+        try home.write(relative + "/Default/Login Data", bytes: 50_000)
+    }
+
+    /// Playwright MCP keeps signed-in browser profiles in
+    /// ~/Library/Caches/ms-playwright/mcp-<channel>-<hash> (its README) or
+    /// ~/Library/Caches/ms-playwright-mcp (seen on a Mac), next to the
+    /// browsers Playwright downloads. Profiles are Review with a warning
+    /// about sign-ins, apart from the browsers; a profile anywhere else in
+    /// Caches gets the same warning, and one outside any rule is left alone.
+    @Test func playwrightProfilesAreSeparateFromItsBrowsers() async throws {
+        let home = try TempDir("home")
+        try home.write("Library/Caches/ms-playwright/chromium-1228/chrome-mac/Chromium.app/x", bytes: 300_000)
+        try home.write("Library/Caches/ms-playwright/__dirlock", bytes: 10)
+        try makeProfile(home, "Library/Caches/ms-playwright/mcp-chrome-ab12cd3")
+        try makeProfile(home, "Library/Caches/ms-playwright-mcp/mcp-chrome-1ab718c")
+        try makeProfile(home, "Library/Caches/my-agent-profile")
+        try makeProfile(home, "work/profiles/agent")
+        let byPath = try await scanFindings(home, processes: ProcessUsage(processes: []))
+
+        let browser = try #require(byPath[home.path("Library/Caches/ms-playwright/chromium-1228")])
+        #expect(browser.safety == .review)
+        #expect(browser.explanation.contains("npx playwright install"))
+        #expect(!browser.explanation.contains("signs"))
+        for profile in ["Library/Caches/ms-playwright/mcp-chrome-ab12cd3", "Library/Caches/ms-playwright-mcp",
+                        "Library/Caches/my-agent-profile"] {
+            let finding = try #require(byPath[home.path(profile)], "\(profile)")
+            #expect(finding.safety == .review, "\(profile)")
+            #expect(finding.explanation.contains("signs"), "\(profile)")
+            #expect(finding.explanation.contains("Quit"), "\(profile)")
+            #expect(finding.checks.map(\.id) == ["inUse"], "\(profile)")
+        }
+        let parent = try #require(byPath[home.path("Library/Caches/ms-playwright")])
+        #expect(parent.safety == .info)
+        #expect(byPath.keys.allSatisfy { !$0.hasPrefix(home.path("work")) })
+
+        // Cleaning the browser leaves the profile beside it; the folder
+        // holding both is never removed.
+        let results = await testCleaner(home).clean(
+            ["Library/Caches/ms-playwright/chromium-1228", "Library/Caches/ms-playwright"].map(home.path)).results
+        #expect(results.map(\.ok) == [true, false], "\(results)")
+        #expect(pathExists(home.path("Library/Caches/ms-playwright/mcp-chrome-ab12cd3/Default/Login Data")))
+    }
+
+    /// A browser running on the profile names it in its arguments.
+    @Test func aBrowserRunningOnAProfileKeepsIt() async throws {
+        let home = try TempDir("home")
+        let profile = "Library/Caches/ms-playwright/mcp-chrome-ab12cd3"
+        try makeProfile(home, profile)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "while :; do sleep 0.2; done", "chrome", "--user-data-dir=" + home.path(profile)]
+        try process.run()
+        defer { process.terminate() }
+
+        let plan = try #require(await testCleaner(home).plan([home.path(profile)]).first)
+        #expect(!plan.isApproved)
+        #expect(plan.finding?.checks.first?.passed == false)
+        #expect(plan.refusal?.contains("Quit") == true, "\(plan)")
+        let result = try #require(await testCleaner(home).clean([home.path(profile)]).results.first)
+        #expect(!result.ok)
+        #expect(pathExists(home.path(profile + "/Default/Login Data")))
+    }
+
     // MARK: llama.cpp
 
     /// llama.cpp downloads models into ~/Library/Caches/llama.cpp, and
