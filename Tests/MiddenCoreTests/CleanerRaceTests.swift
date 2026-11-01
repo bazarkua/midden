@@ -18,19 +18,24 @@ private func exists(_ path: String) -> Bool {
     return lstat(path, &info) == 0
 }
 
-/// Runs `change` once, the first time the cleaner reaches `stage`.
+/// Runs `change` once, the first time the cleaner reaches `stage`, and
+/// records whether the change succeeded: a passing check after a change
+/// that never happened proves nothing.
 private final class Trigger: Sendable {
     private let fired = Atomic<Bool>(false)
+    private let worked = Atomic<Bool>(false)
     let stage: CleanStage
-    let change: @Sendable () -> Void
-    init(at stage: CleanStage, _ change: @escaping @Sendable () -> Void) {
+    let change: @Sendable () -> Bool
+    init(at stage: CleanStage, _ change: @escaping @Sendable () -> Bool) {
         self.stage = stage
         self.change = change
     }
     func callAsFunction(_ reached: CleanStage, _ path: String) {
         guard reached == stage, !fired.exchange(true, ordering: .relaxed) else { return }
-        change()
+        worked.store(change(), ordering: .relaxed)
     }
+    /// It ran, and every step of the change succeeded.
+    var changed: Bool { fired.load(ordering: .relaxed) && worked.load(ordering: .relaxed) }
 }
 
 private func cleaner(_ home: TempDir, _ trigger: Trigger) -> Cleaner {
@@ -45,10 +50,9 @@ private func cleaner(_ home: TempDir, _ trigger: Trigger) -> Cleaner {
 }
 
 /// Replaces the folder at `path` with a symlink to `target`, keeping the
-/// original next to it.
-@Sendable private func swapForSymlink(_ path: String, to target: String) {
-    rename(path, path + ".moved")
-    symlink(target, path)
+/// original next to it. True when both steps succeeded.
+@Sendable private func swapForSymlink(_ path: String, to target: String) -> Bool {
+    rename(path, path + ".moved") == 0 && symlink(target, path) == 0
 }
 
 /// Runs `body` as a known issue when `known` is true.
@@ -74,6 +78,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         let trigger = Trigger(at: stage) { swapForSymlink(caches, to: target) }
 
         let result = await cleaner(home, trigger).clean([home.path("Library/Caches/com.example.fake")]).results[0]
+        #expect(trigger.changed)
         // Before deleting, nothing re-checks the ancestors: removeItem
         // follows the new symlink and deletes the folder outside home.
         try expectSafe(known: stage == .beforeDelete, "ancestor swapped right before removeItem") {
@@ -95,6 +100,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         let trigger = Trigger(at: stage) { swapForSymlink(logs, to: target) }
 
         let result = await cleaner(home, trigger).clean([logs]).results[0]
+        #expect(trigger.changed)
         try expectSafe(known: stage == .beforeDelete, "folder swapped right before removeContents") {
             #expect(exists(sentinel))
             #expect(!result.ok)
@@ -114,6 +120,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         let trigger = Trigger(at: stage) { swapForSymlink(cache, to: target) }
 
         _ = await cleaner(home, trigger).clean([cache])
+        #expect(trigger.changed)
         #expect(exists(sentinel))
         // The original was moved aside, not deleted through the link.
         #expect(exists(cache + ".moved/blob"))
@@ -127,11 +134,12 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         try home.write("Library/Caches/com.example.fake/blob", bytes: 10_000)
         let cache = home.path("Library/Caches/com.example.fake")
         let trigger = Trigger(at: stage) {
-            rename(cache, cache + ".moved")
-            FileManager.default.createFile(atPath: cache, contents: Data("not a cache".utf8))
+            rename(cache, cache + ".moved") == 0
+                && FileManager.default.createFile(atPath: cache, contents: Data("not a cache".utf8))
         }
 
         let result = await cleaner(home, trigger).clean([cache]).results[0]
+        #expect(trigger.changed)
         // Nothing checks the item's identity right before removeItem.
         try expectSafe(known: stage == .beforeDelete, "replaced by a file right before removeItem") {
             #expect(exists(cache))
@@ -150,11 +158,11 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         let child = home.path("Library/Caches/com.example.fake/data")
         let target = outside.path("data")
         let trigger = Trigger(at: stage) {
-            try? FileManager.default.removeItem(atPath: child)
-            symlink(target, child)
+            (try? FileManager.default.removeItem(atPath: child)) != nil && symlink(target, child) == 0
         }
 
         _ = await cleaner(home, trigger).clean([home.path("Library/Caches/com.example.fake")])
+        #expect(trigger.changed)
         #expect(exists(sentinel))
     }
 
@@ -168,17 +176,19 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         let sentinel = try outside.write("precious.bin", bytes: 50_000)
         let blob = home.path("Library/Caches/com.example.fake/blob")
         let trigger = Trigger(at: stage) {
-            unlink(blob)
-            link(sentinel, blob)
+            unlink(blob) == 0 && link(sentinel, blob) == 0
         }
 
         _ = await cleaner(home, trigger).clean([home.path("Library/Caches/com.example.fake")])
+        #expect(trigger.changed)
         #expect(exists(sentinel))
         #expect((try? Data(contentsOf: URL(fileURLWithPath: sentinel)))?.count == 50_000)
     }
 
     /// An installer moved to the Trash: its folder becomes a symlink to
-    /// another folder holding a file of the same name.
+    /// another folder holding a file of the same name. The Trash here is
+    /// the test's stand-in (a move into a folder in the fake home), so this
+    /// covers the path Midden hands it, not the real Trash's own handling.
     @Test(arguments: CleanStage.allCases)
     func installerFolderSwappedForASymlink(stage: CleanStage) async throws {
         let home = try TempDir("home")
@@ -190,6 +200,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         let trigger = Trigger(at: stage) { swapForSymlink(downloads, to: target) }
 
         _ = await cleaner(home, trigger).clean([home.path("Downloads/Setup.pkg")])
+        #expect(trigger.changed)
         // Moved, not deleted, but moved out of a folder outside home.
         try expectSafe(known: stage == .beforeDelete, "folder swapped right before moving to the Trash") {
             #expect(exists(sentinel))
@@ -209,7 +220,54 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         }
 
         let result = await cleaner(home, trigger).clean([worktree]).results[0]
+        #expect(trigger.changed)
         #expect(!result.ok)
         #expect(exists(work))
+    }
+
+    /// After validation, the folder is replaced by another folder of the
+    /// same name holding something else. Same kind, same path: only its
+    /// identity shows it isn't what was approved, and nothing checks that.
+    /// (Before validation, the replacement is simply what gets validated.)
+    @Test(arguments: [CleanStage.afterClaim, .beforeDelete])
+    func targetReplacedByAnotherFolder(stage: CleanStage) async throws {
+        let home = try TempDir("home")
+        try home.write("Library/Caches/com.example.fake/blob", bytes: 10_000)
+        let cache = home.path("Library/Caches/com.example.fake")
+        let sentinel = cache + "/precious.txt"
+        let trigger = Trigger(at: stage) {
+            rename(cache, cache + ".moved") == 0 && mkdir(cache, 0o755) == 0
+                && FileManager.default.createFile(atPath: sentinel, contents: Data("not a cache".utf8))
+        }
+
+        let result = await cleaner(home, trigger).clean([cache]).results[0]
+        #expect(trigger.changed)
+        try expectSafe(known: true, "replaced by another folder after validation; no identity check") {
+            #expect(exists(sentinel))
+            #expect(!result.ok)
+        }
+    }
+
+    /// An ignored file of the user's appears in a worktree after it was
+    /// audited: `git worktree remove` deletes ignored files without asking,
+    /// so it goes with the worktree.
+    @Test(arguments: [CleanStage.afterClaim, .beforeDelete])
+    func worktreeGetsIgnoredFilesAfterTheAudit(stage: CleanStage) async throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try home.write("repo/.gitignore", text: ".env\n")
+        try sh(["git", "-C", repository, "commit", "-q", "-am", "Ignore .env"])
+        let worktree = try addWorktree(home, repository: repository, branch: "task")
+        let secret = worktree + "/.env"
+        let trigger = Trigger(at: stage) {
+            FileManager.default.createFile(atPath: secret, contents: Data("API_KEY=only-copy".utf8))
+        }
+
+        let result = await cleaner(home, trigger).clean([worktree]).results[0]
+        #expect(trigger.changed)
+        try expectSafe(known: true, "ignored file added after the audit; git removes it without asking") {
+            #expect(exists(secret))
+            #expect(!result.ok)
+        }
     }
 }
