@@ -46,3 +46,29 @@ import Testing
     #expect(CleanAction.manual("Do it in Finder").isAutomatic == false)
     #expect(CleanAction.removeDirectory.isAutomatic)
 }
+
+@Suite struct DateTests {
+    private let calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        return calendar
+    }()
+
+    private func date(_ text: String) -> Date {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = calendar.timeZone
+        formatter.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime, .withDashSeparatorInDate]
+        return formatter.date(from: text)!
+    }
+
+    @Test func countsMidnightsNotTwentyFourHourPeriods() {
+        let now = date("2026-11-01T00:15:00")
+        // Six hours ago, but on the previous day.
+        #expect(Dates.describe(date("2026-10-31T18:00:00"), now: now, calendar: calendar)
+            == "yesterday (Oct 31, 2026)")
+        #expect(Dates.describe(date("2026-11-01T00:05:00"), now: now, calendar: calendar)
+            == "today (Nov 1, 2026)")
+        #expect(Dates.describe(date("2026-10-19T23:59:00"), now: now, calendar: calendar)
+            == "13 days ago (Oct 19, 2026)")
+    }
+}

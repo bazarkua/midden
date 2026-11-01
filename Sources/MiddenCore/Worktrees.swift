@@ -280,9 +280,9 @@ struct WorktreeAuditor: Sendable {
 }
 
 enum Dates {
-    /// "today", "yesterday" or "12 days ago", with the date: "12 days ago (19 Oct 2026)".
-    static func describe(_ date: Date, now: Date = Date()) -> String {
-        let days = Int(now.timeIntervalSince(date) / 86_400)
+    /// "today", "yesterday" or "12 days ago", with the date: "12 days ago (Oct 19, 2026)".
+    static func describe(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
+        let days = calendarDays(from: date, to: now, calendar: calendar)
         let relative =
             switch days {
             case ..<1: "today"
@@ -291,7 +291,16 @@ enum Dates {
             }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "d MMM yyyy"
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "MMM d, yyyy"
         return "\(relative) (\(formatter.string(from: date)))"
+    }
+
+    /// Midnights crossed between two dates, not 24-hour periods: 6 pm
+    /// yesterday is "yesterday" at 1 am today.
+    static func calendarDays(from date: Date, to now: Date, calendar: Calendar = .current) -> Int {
+        let start = calendar.startOfDay(for: date)
+        let end = calendar.startOfDay(for: now)
+        return calendar.dateComponents([.day], from: start, to: end).day ?? 0
     }
 }
