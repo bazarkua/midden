@@ -15,6 +15,11 @@ struct CommandResult: Sendable {
     }
 }
 
+/// Whether this process runs in the App Sandbox (the App Store build).
+enum Sandbox {
+    static let isActive = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+}
+
 /// Runs command-line tools synchronously, capturing stdout and stderr.
 /// Call it from a thread that may block, never from the cooperative pool.
 enum Command {
@@ -31,6 +36,31 @@ enum Command {
 
     /// Full path of an executable, or nil.
     static func find(_ tool: String) -> String? {
+        if tool == "git" { return git() }
+        // xcrun refuses to run in the App Sandbox.
+        if tool == "xcrun", Sandbox.isActive { return nil }
+        return search(tool)
+    }
+
+    /// The git to run. Inside the App Sandbox, /usr/bin/git and xcrun can't
+    /// be used, so git is taken from the developer folder they would pick:
+    /// the one /var/db/xcode_select_link points to, else the Command Line
+    /// Tools. Outside the sandbox, the user's own git from PATH is preferred.
+    static func git(
+        sandboxed: Bool = Sandbox.isActive,
+        xcodeSelectLink: String = "/var/db/xcode_select_link",
+        commandLineTools: String = "/Library/Developer/CommandLineTools"
+    ) -> String? {
+        guard sandboxed else { return search("git") }
+        var candidates: [String] = []
+        if let developer = try? FileManager.default.destinationOfSymbolicLink(atPath: xcodeSelectLink) {
+            candidates.append(developer + "/usr/bin/git")
+        }
+        candidates.append(commandLineTools + "/usr/bin/git")
+        return candidates.first { access($0, X_OK) == 0 }
+    }
+
+    private static func search(_ tool: String) -> String? {
         for directory in searchPath {
             let candidate = directory + "/" + tool
             guard access(candidate, X_OK) == 0 else { continue }

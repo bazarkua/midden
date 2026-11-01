@@ -26,7 +26,7 @@ struct WorktreeAudit: Sendable {
 /// nothing uncommitted, its commits are on a branch, it isn't locked, no
 /// program is working in it, and it hasn't been used lately.
 struct WorktreeAuditor: Sendable {
-    var git: String? = Command.find("git")
+    var git: String? = Command.git()
     var processes: ProcessDirectories
     var now = Date()
     /// Worktrees used more recently than this are "review", not "safe".
@@ -38,13 +38,15 @@ struct WorktreeAuditor: Sendable {
         let path = worktree.path
         let lastActivity = activityDate(worktree.gitDir)
         guard let git else {
-            return blocked(
-                worktree, repositoryName: nil, branch: nil, lastActivity: lastActivity,
+            return WorktreeAudit(
+                repositoryName: (worktree.path as NSString).lastPathComponent, repository: nil,
+                branch: nil,
                 checks: [SafetyCheck(
                     title: "Git is installed", passed: false,
-                    detail: "Midden needs git to check this worktree for uncommitted work.")],
-                steps: ["install Git (`xcode-select --install`) and scan again"],
-                repository: nil)
+                    detail: "Midden needs git to check this worktree for uncommitted work, and found none.")],
+                safety: .info,
+                action: .manual("Install Xcode or the Command Line Tools to check worktrees (`xcode-select --install`), then scan again."),
+                lastActivity: lastActivity)
         }
         // An orphan: the repository it belonged to was deleted or moved, so
         // git can neither check it nor remove it.

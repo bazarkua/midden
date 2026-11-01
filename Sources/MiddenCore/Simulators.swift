@@ -29,7 +29,11 @@ enum Simulators {
     /// Simulators simctl marks unavailable, usually because their runtime is
     /// no longer installed. Only asks simctl when the user has simulators,
     /// so Macs without Xcode never see a developer tools prompt.
-    static func unavailable(home: String) -> [SimulatorDevice]? {
+    ///
+    /// Returns nil when it can't tell, which includes the App Sandbox: there
+    /// simctl reported all 12 healthy simulators of a test Mac as unavailable.
+    static func unavailable(home: String, sandboxed: Bool = Sandbox.isActive) -> [SimulatorDevice]? {
+        guard !sandboxed else { return nil }
         guard FileManager.default.fileExists(atPath: devicesFolder(home: home)) else { return [] }
         let result = Command.run(["xcrun", "simctl", "list", "devices", "-j"], timeout: 60)
         guard result.succeeded else { return nil }

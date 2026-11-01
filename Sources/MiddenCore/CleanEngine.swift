@@ -16,6 +16,7 @@ public struct CleanPlan: Sendable, Hashable {
 /// verdict, not the action.
 struct CleanEngine {
     var home: String
+    var sandboxed = Sandbox.isActive
 
     init(home: URL) throws {
         self.home = try System.canonicalPath(home.path)
@@ -145,7 +146,10 @@ struct CleanEngine {
         guard UUID(uuidString: udid) != nil else {
             return refuse("Not a simulator id.")
         }
-        guard let devices = Simulators.unavailable(home: home) else {
+        guard !sandboxed else {
+            return refuse("Midden can't check simulators from the App Store version; use `xcrun simctl delete unavailable` in Terminal.")
+        }
+        guard let devices = Simulators.unavailable(home: home, sandboxed: false) else {
             return refuse("simctl couldn't list simulators.")
         }
         guard let device = devices.first(where: { $0.udid == udid }) else {
