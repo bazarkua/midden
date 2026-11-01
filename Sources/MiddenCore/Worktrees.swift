@@ -56,6 +56,19 @@ struct WorktreeAuditor: Sendable {
                 .deletingLastPathComponent
             let repositoryPath = (repositoryGitDir as NSString).lastPathComponent == ".git"
                 ? (repositoryGitDir as NSString).deletingLastPathComponent : repositoryGitDir
+            // The repository is there but its record of this worktree isn't:
+            // pruned, or deleted by hand. Git can't check it either way.
+            if lstat(repositoryGitDir, &info) == 0 {
+                return WorktreeAudit(
+                    repositoryName: (repositoryPath as NSString).lastPathComponent, repository: nil,
+                    branch: nil,
+                    checks: [SafetyCheck(
+                        id: "worktreeRecorded", title: "Its repository lists it", passed: false,
+                        detail: "Its .git file points into \(repositoryPath), which doesn't list this worktree any more, so nothing can check it for uncommitted work.")],
+                    safety: .info,
+                    action: .manual("Git can't remove it because its repository no longer lists it. If you don't need its files, delete the folder in Finder."),
+                    lastActivity: lastActivity)
+            }
             return WorktreeAudit(
                 repositoryName: (repositoryPath as NSString).lastPathComponent, repository: nil,
                 branch: nil,
