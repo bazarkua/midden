@@ -75,6 +75,7 @@ struct ProjectFacts: Sendable, Hashable {
 enum DirectoryMatch: Sendable {
     case rule(RuleMatch)
     case buildFolder(BuildFolderMatch)
+    case worktree(WorktreeMatch)
 }
 
 /// Everything known about a directory when it's entered.
@@ -124,6 +125,10 @@ enum Classifier {
             if match.rule.claimsSubtree { inner.claimed = true }
             return (.rule(match), inner)
         }
+        if let gitDir = worktreeGitDir(dir) {
+            inner.claimed = true
+            return (.worktree(WorktreeMatch(path: dir.path, gitDir: gitDir)), inner)
+        }
         // Build folders only where projects live: not in ~/Library, and not in
         // hidden tool folders like ~/.vscode/extensions or ~/.nvm, whose
         // node_modules are installed tools, not rebuildable project output.
@@ -140,6 +145,47 @@ enum Classifier {
             inner.claimed = true
         }
         return (nil, inner)
+    }
+
+    /// A linked worktree has a `.git` file, not a folder, saying
+    /// `gitdir: <repository>/worktrees/<name>`. Submodules have one too, but
+    /// it points into `<repository>/modules/`, so they're left alone.
+    static func worktreeGitDir(_ dir: DirectoryFacts) -> String? {
+        guard dir.entries.contains(where: { $0.name == ".git" && $0.kind == .file }),
+            let text = readSmallFile(dir.path + "/.git"),
+            let line = text.split(whereSeparator: \.isNewline).first,
+            line.hasPrefix("gitdir:")
+        else { return nil }
+        var gitDir = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+        guard !gitDir.isEmpty else { return nil }
+        if !gitDir.hasPrefix("/") { gitDir = dir.path + "/" + gitDir }
+        gitDir = normalize(gitDir)
+        let parent = (gitDir as NSString).deletingLastPathComponent
+        return (parent as NSString).lastPathComponent == "worktrees" ? gitDir : nil
+    }
+
+    /// Removes `.` and `..` components without resolving symlinks.
+    static func normalize(_ path: String) -> String {
+        var components: [Substring] = []
+        for component in path.split(separator: "/") {
+            switch component {
+            case ".": continue
+            case "..": if !components.isEmpty { components.removeLast() }
+            default: components.append(component)
+            }
+        }
+        return "/" + components.joined(separator: "/")
+    }
+
+    /// The first 4 KB of a regular file, not following symlinks.
+    static func readSmallFile(_ path: String) -> String? {
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let count = read(fd, &buffer, buffer.count)
+        guard count > 0 else { return nil }
+        return String(decoding: buffer[..<count], as: UTF8.self)
     }
 
     /// Classifies a file, given the scope of the directory holding it.
