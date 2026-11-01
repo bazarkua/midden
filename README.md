@@ -53,6 +53,14 @@ A scan can be an hour old when you press Clean. So the cleaner trusts nothing fr
 3. If the app that owns a cache is running, Midden asks you to quit it first.
 4. Worktrees are removed with `git worktree remove`, without `--force`, so git itself refuses a worktree with changes.
 
+## Privacy
+
+Midden needs no account and no sign-up. Scanning and cleaning happen on your Mac, and the report stays there. The engine has no networking code at all: no analytics, no telemetry, nothing uploaded. It imports only Foundation, AppKit and Synchronization, so you can check this yourself with one search:
+
+```sh
+git grep -n -E "URLSession|NWConnection|import Network" -- Sources   # no results
+```
+
 ## Install
 
 **The app.** Midden for Mac is coming to the Mac App Store. A direct download with every feature will be on the [Releases](https://github.com/bazarkua/midden/releases) page.
