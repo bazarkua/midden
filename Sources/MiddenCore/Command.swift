@@ -181,6 +181,15 @@ enum Command {
             envp.forEach { free($0) }
         }
 
+        // The deadline may have passed during the setup above: then nothing
+        // is started.
+        if clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) >= deadline {
+            for fd in outputPipe + errorPipe { close(fd) }
+            children.release()
+            return CommandResult(
+                status: -1, output: "", error: "Timed out after \(Int(timeout)) seconds before \(tool) started.")
+        }
+
         var pid: pid_t = 0
         let spawned = posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
         close(outputPipe[1])
@@ -364,6 +373,8 @@ final class CommandChildren: Sendable {
     /// one at most.
     func reserve(until deadline: UInt64) -> Bool {
         while true {
+            // Expired: nothing is taken, even if a slot is free.
+            if clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) >= deadline { return false }
             let reserved = state.withLock { state in
                 guard state.held < limit else { return false }
                 state.held += 1
@@ -371,7 +382,6 @@ final class CommandChildren: Sendable {
                 return true
             }
             if reserved { return true }
-            if clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) >= deadline { return false }
             usleep(5_000)
         }
     }

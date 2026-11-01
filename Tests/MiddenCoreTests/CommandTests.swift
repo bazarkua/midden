@@ -215,6 +215,57 @@ private func concurrently(_ count: Int, _ body: @escaping @Sendable (Int) -> Voi
         #expect(FileManager.default.fileExists(atPath: marker))
     }
 
+    /// An admission whose deadline has passed takes nothing, even with
+    /// slots free.
+    @Test func anExpiredDeadlineReservesNothing() {
+        let children = CommandChildren(limit: 2)
+        let past = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - 1
+        #expect(!children.reserve(until: past))
+        #expect(children.held == 0)
+    }
+
+    /// A command whose deadline has already passed starts nothing: it
+    /// never gets to create its file.
+    @Test func aCommandPastItsDeadlineLaunchesNothing() throws {
+        let dir = try TempDir()
+        let children = CommandChildren(limit: 4)
+        for index in 0..<10 {
+            let result = Command.run(
+                ["/usr/bin/touch", dir.path("launched-\(index)")], environment: [:], timeout: 0,
+                children: children, waitpid: waitpid)
+            #expect(!result.succeeded)
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).isEmpty)
+        #expect(children.held == 0)
+    }
+
+    /// A command still waiting for a slot when its deadline passes gives
+    /// up, and starts nothing even when a slot frees up just afterwards.
+    @Test func capacityFreedAfterTheDeadlineLaunchesNothing() throws {
+        let dir = try TempDir()
+        let children = CommandChildren(limit: 1)
+        try #require(children.reserve(until: clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + 60_000_000_000))
+        let sentinel = dir.path("launched")
+        let outcome = Mutex<CommandResult?>(nil)
+        Thread {
+            let result = Command.run(
+                ["/usr/bin/touch", sentinel], environment: [:], timeout: 0.2, children: children,
+                waitpid: { Darwin.waitpid($0, $1, $2) })
+            outcome.withLock { $0 = result }
+        }.start()
+        Thread.sleep(forTimeInterval: 0.4)
+        children.release()
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while outcome.withLock({ $0 }) == nil, Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        let result = try #require(outcome.withLock { $0 })
+        #expect(!result.succeeded)
+        #expect(result.error.contains("already running"), "\(result.error)")
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(!FileManager.default.fileExists(atPath: sentinel))
+        #expect(children.held == 0)
+    }
+
     /// waitpid fails with something other than ECHILD while the child is
     /// alive: the status is unknown, but the child is still ours, so the
     /// command fails, the child is stopped, and its slot stays taken until
