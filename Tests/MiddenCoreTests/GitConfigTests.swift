@@ -89,6 +89,26 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
         #expect(personal.action.isAutomatic)
     }
 
+    /// Why the check above exists: `git worktree remove`, without --force,
+    /// deletes a worktree whose only extra file is an ignored .env.
+    @Test func gitRemovesIgnoredFilesWithoutAsking() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try home.write("repo/.gitignore", text: ".env\n")
+        try sh(["git", "-C", repository, "commit", "-q", "-am", "Ignore .env"])
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        try home.write("worktrees/feature/.env", text: "API_KEY=only-copy")
+
+        let audit = try auditWorktree(home, worktree)
+        #expect(audit.safety == .review)
+        #expect(audit.checks.first { $0.id == "ignoredFiles" }?.detail.contains(".env") == true)
+
+        let removal = Command.run(
+            ["git", "-C", repository, "worktree", "remove", worktree], environment: Command.quietGit)
+        #expect(removal.succeeded)
+        #expect(!exists(home.path("worktrees/feature/.env")))
+    }
+
     @Test func namesWithNewlinesAndRenamesAreCountedOnce() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
