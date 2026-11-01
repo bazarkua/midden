@@ -38,8 +38,10 @@ enum BuildFolderKind: Sendable, Hashable {
     ///   - name: the folder's name.
     ///   - parent: facts from the listing of the folder holding it (the project).
     ///   - entries: the folder's own listing.
+    ///   - path: the folder's path, to read a Python environment's
+    ///     pyvenv.cfg when the name doesn't say what it is.
     static func detect(
-        name: String, parent: ProjectFacts, entries: [DirectoryEntry]
+        name: String, parent: ProjectFacts, entries: [DirectoryEntry], path: String? = nil
     ) -> BuildFolderKind? {
         let markers = parent.markers
         switch name {
@@ -65,7 +67,25 @@ enum BuildFolderKind: Sendable, Hashable {
         case ".mypy_cache", ".pytest_cache", ".ruff_cache":
             return .pythonToolCache(tool: pythonTools[name]!)
         default:
+            if let path, isPythonEnvironment(path: path, entries: entries) { return .pythonEnvironment }
             return nil
+        }
+    }
+
+    /// What `python -m venv` makes, under any name: a pyvenv.cfg file
+    /// (not a symlink) saying which Python it was made from (`home = ...`),
+    /// next to real bin and lib folders.
+    static func isPythonEnvironment(path: String, entries: [DirectoryEntry]) -> Bool {
+        func has(_ name: String, _ kind: DirectoryEntry.Kind) -> Bool {
+            entries.contains { $0.name == name && $0.kind == kind }
+        }
+        guard has("pyvenv.cfg", .file), has("bin", .directory), has("lib", .directory),
+            let config = Classifier.readSmallFile(path + "/pyvenv.cfg")
+        else { return false }
+        return config.split(whereSeparator: \.isNewline).contains { line in
+            let parts = line.split(separator: "=", maxSplits: 1)
+            return parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces) == "home"
+                && !parts[1].trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
 
@@ -87,7 +107,9 @@ enum BuildFolderKind: Sendable, Hashable {
         case .pythonEnvironment:
             """
             A Python virtual environment for “\(project)”. To recreate it you need the list of \
-            packages it had: \(rebuild(markers)).
+            packages it had: \(rebuild(markers)). Packages installed into it by hand, and files \
+            changed inside it, aren't recorded anywhere and are lost; scripts that run with its \
+            Python stop working until you recreate it.
             """
         case .pods:
             "CocoaPods dependencies of “\(project)”. `pod install` puts them back."

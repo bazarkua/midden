@@ -169,7 +169,7 @@ enum Classifier {
         // hidden tool folders like ~/.vscode/extensions or ~/.nvm, whose
         // node_modules are installed tools, not rebuildable project output.
         if !inner.inLibrary, !inner.inDotFolder,
-            let kind = BuildFolderKind.detect(name: dir.name, parent: dir.parent, entries: dir.entries)
+            let kind = BuildFolderKind.detect(name: dir.name, parent: dir.parent, entries: dir.entries, path: dir.path)
         {
             inner.claimed = true
             let match = BuildFolderMatch(
