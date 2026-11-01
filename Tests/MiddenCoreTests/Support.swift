@@ -7,13 +7,21 @@ import Foundation
 /// commit in a worktree starts a file-watcher daemon that keeps running, and
 /// Midden would see the worktree as in use. Variables that point git at
 /// another repository are removed too.
+///
+/// Auto maintenance is off as well. After a commit, git starts
+/// `git maintenance run --auto` in the background, working in the same
+/// folder, and it can outlive the commit by a few milliseconds: right after
+/// 12 of 80 commits in a worktree, a git process was still working in it
+/// (0 of 80 with auto maintenance off). A test that commits and then cleans
+/// at once would see it and, rightly, refuse. In real use cleaning doesn't
+/// follow a commit within milliseconds, and refusing while git really is
+/// working there is the safe answer.
 enum Hermetic {
     static let gitEnvironment: [String: String?] = [
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_SYSTEM": nil,
         "GIT_CONFIG_PARAMETERS": nil,
-        "GIT_CONFIG_COUNT": nil,
         "GIT_DIR": nil,
         "GIT_WORK_TREE": nil,
         "GIT_INDEX_FILE": nil,
@@ -22,6 +30,11 @@ enum Hermetic {
         "GIT_COMMON_DIR": nil,
         "GIT_NAMESPACE": nil,
         "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "maintenance.auto",
+        "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "gc.auto",
+        "GIT_CONFIG_VALUE_1": "0",
         "GIT_AUTHOR_NAME": "Test",
         "GIT_AUTHOR_EMAIL": "test@example.com",
         "GIT_COMMITTER_NAME": "Test",
