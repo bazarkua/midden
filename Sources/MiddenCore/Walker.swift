@@ -12,6 +12,25 @@ import Synchronization
 // counts its outstanding subdirectories (plus one for its own listing). The
 // thread that brings the count to zero adds the directory's total to its
 // parent and decrements the parent's count, and so on up the tree.
+//
+// A listing can block indefinitely: open() waits while macOS shows a privacy
+// prompt ("would like to access data from other apps") that nobody answers,
+// and a hung network or File Provider mount can do the same. A scan must
+// always finish, so the walker has a watchdog:
+//
+// - Each worker publishes the folder it is listing and a heartbeat, which
+//   the reader bumps after every getattrlistbulk batch. A huge folder that
+//   is still being read keeps beating; a blocked open() doesn't.
+// - The thread that called run() supervises. When a listing hasn't beaten
+//   for `stallTimeout`, it claims the folder with a compare-and-swap on the
+//   folder's state (listing -> given up), counts it as unreadable, finishes
+//   its parent's countdown as if the listing had failed, ends the stuck
+//   worker's work item on the queue, and starts a replacement worker.
+// - The stuck thread can't be cancelled, but whenever its call returns it
+//   tries the same compare-and-swap (listing -> listed), loses, drops the
+//   result and exits. Nothing it read reaches the totals or the delegate.
+//
+// The walk ends when the queue is drained; it never waits for a stuck thread.
 
 /// Decisions the walker leaves to its caller: which directories to remember,
 /// what each subdirectory inherits, and what to skip. The walker itself knows
@@ -88,6 +107,8 @@ struct WalkResult<Mark: Sendable> {
     var unreadable: Int
     /// Why the root itself couldn't be listed; nil when it could.
     var rootError: POSIXError?
+    /// Folders whose listing stopped making progress and was given up.
+    var stalled: [String] = []
     /// Marked directories, in no particular order.
     var marked: [SizedDirectory<Mark>]
     /// The root, with the sizes of its immediate children.
@@ -104,11 +125,19 @@ final class CancellationFlag: Sendable {
 final class Walker<Delegate: WalkDelegate>: Sendable {
     typealias Mark = Delegate.Mark
 
+    /// Lists a folder. Replaceable in tests to simulate a folder that blocks.
+    typealias Lister = @Sendable (_ path: String, _ reader: DirectoryReader) throws(POSIXError) -> [DirectoryEntry]
+
     let root: String
     let delegate: Delegate
     let threadCount: Int
+    /// A listing without progress for this long is given up.
+    let stallTimeout: TimeInterval
+    private let lister: Lister
 
     private let queue = WorkQueue<Node>()
+    private let workers = Mutex<[Worker]>([])
+    private let stalled = Mutex<[String]>([])
     private let hardLinks = HardLinkSet()
     private let marked = Mutex<[SizedDirectory<Mark>]>([])
     private let rootRecord = Mutex<SizedDirectory<Mark>?>(nil)
@@ -119,10 +148,16 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     private let rootError = Atomic<Int32>(0)
     private let lastProgress = Atomic<UInt64>(0)
 
-    init(root: String, delegate: Delegate, threadCount: Int = WalkDefaults.threadCount) {
+    init(
+        root: String, delegate: Delegate, threadCount: Int = WalkDefaults.threadCount,
+        stallTimeout: TimeInterval = WalkDefaults.stallTimeout,
+        lister: @escaping Lister = { path, reader throws(POSIXError) in try reader.entries(atPath: path) }
+    ) {
         self.root = root
         self.delegate = delegate
         self.threadCount = max(threadCount, 1)
+        self.stallTimeout = stallTimeout
+        self.lister = lister
     }
 
     /// Walks the tree and blocks until done. Never follows symlinks and never
@@ -141,23 +176,10 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             parentRecord: nil, context: delegate.rootContext(),
             initialBytes: Int64(info.st_blocks) * 512)])
 
-        let done = DispatchGroup()
-        for index in 0..<threadCount {
-            done.enter()
-            let thread = Thread { [self] in
-                // Never download iCloud or File Provider content: listing a
-                // folder whose contents aren't on disk fails instead.
-                setiopolicy_np(
-                    IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD,
-                    IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
-                work(device: device, cancellation: cancellation, progress: progress)
-                done.leave()
-            }
-            thread.name = "midden.walker.\(index)"
-            thread.stackSize = 1 << 20
-            thread.start()
+        for _ in 0..<threadCount {
+            startWorker(device: device, cancellation: cancellation, progress: progress)
         }
-        done.wait()
+        supervise(device: device, cancellation: cancellation, progress: progress)
 
         return WalkResult(
             totalBytes: rootTotal.load(ordering: .acquiring),
@@ -165,47 +187,122 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             unreadable: unreadable.load(ordering: .relaxed),
             rootError: rootError.load(ordering: .relaxed) == 0
                 ? nil : POSIXError(rootError.load(ordering: .relaxed)),
+            stalled: stalled.withLock { $0 },
             marked: marked.withLock { $0 },
             root: rootRecord.withLock { $0 })
     }
 
+    private func startWorker(
+        device: dev_t, cancellation: CancellationFlag,
+        progress: @escaping @Sendable (ScanProgress) -> Void
+    ) {
+        let worker = Worker()
+        let index = workers.withLock { workers in
+            workers.append(worker)
+            return workers.count
+        }
+        let thread = Thread { [self] in
+            // Never download iCloud or File Provider content: listing a
+            // folder whose contents aren't on disk fails instead.
+            setiopolicy_np(
+                IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD,
+                IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
+            work(worker, device: device, cancellation: cancellation, progress: progress)
+        }
+        thread.name = "midden.walker.\(index)"
+        thread.stackSize = 1 << 20
+        thread.start()
+    }
+
+    /// Runs on the thread that called run() until the queue is drained,
+    /// giving up listings that stopped making progress.
+    private func supervise(
+        device: dev_t, cancellation: CancellationFlag,
+        progress: @escaping @Sendable (ScanProgress) -> Void
+    ) {
+        let timeout = UInt64(stallTimeout * 1e9)
+        let tick = min(max(stallTimeout / 4, 0.01), 0.25)
+        while !queue.waitUntilFinished(timeout: tick) {
+            for worker in workers.withLock({ $0 }) where !worker.isAbandoned {
+                // Read the clock after the worker's timestamp, which may be newer
+                // than any clock reading taken before it.
+                guard let (node, since) = worker.listing,
+                    clock_gettime_nsec_np(CLOCK_UPTIME_RAW) >= since + timeout,
+                    node.state.compareExchange(
+                        expected: Node.listing, desired: Node.givenUp, ordering: .acquiringAndReleasing
+                    ).exchanged
+                else { continue }
+                worker.abandon()
+                stalled.withLock { $0.append(node.path) }
+                failed(node, code: ETIMEDOUT)
+                queue.finishedChain()  // On behalf of the stuck worker.
+                startWorker(device: device, cancellation: cancellation, progress: progress)
+            }
+        }
+    }
+
     private func work(
+        _ worker: Worker,
         device: dev_t,
         cancellation: CancellationFlag,
         progress: @Sendable (ScanProgress) -> Void
     ) {
         let reader = DirectoryReader()
+        reader.onBatch = { worker.beat() }
         while let first = queue.pop() {
             // Depth-first: keep one subdirectory for this thread, share the rest.
             var next: Node? = first
             while let node = next {
                 if cancellation.isCancelled {
                     next = nil
-                } else {
-                    next = process(node, reader: reader, device: device)
-                    reportProgress(path: node.path, progress)
+                    continue
                 }
+                guard let kept = process(node, reader: reader, worker: worker, device: device) else {
+                    // The watchdog gave up this listing and has taken over.
+                    return
+                }
+                next = kept.next
+                reportProgress(path: node.path, progress)
             }
             queue.finishedChain()
         }
     }
 
+    /// Counts a folder that couldn't be listed and finishes it.
+    private func failed(_ node: Node, code: Int32) {
+        // Gone since its parent was listed, or not downloaded: not an error.
+        if ![ENOENT, ENOTDIR, EDEADLK].contains(code) {
+            unreadable.add(1, ordering: .relaxed)
+        }
+        if node.depth == 0 { rootError.store(code, ordering: .relaxed) }
+        if node.remaining.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 {
+            complete(node, record: nil)
+        }
+    }
+
+    private struct Kept {
+        var next: Node?
+    }
+
     /// Lists one directory and queues its subdirectories. Returns one of them
-    /// for the calling thread to continue with.
-    private func process(_ node: Node, reader: DirectoryReader, device: dev_t) -> Node? {
-        let entries: [DirectoryEntry]
-        do {
-            entries = try reader.entries(atPath: node.path)
-        } catch {
-            // Gone since its parent was listed, or not downloaded: not an error.
-            if ![ENOENT, ENOTDIR, EDEADLK].contains(error.code.rawValue) {
-                unreadable.add(1, ordering: .relaxed)
-            }
-            if node.depth == 0 { rootError.store(error.code.rawValue, ordering: .relaxed) }
-            if node.remaining.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 {
-                complete(node, record: nil)
-            }
+    /// for the calling thread to continue with, or nil if the watchdog gave
+    /// up this listing meanwhile.
+    private func process(_ node: Node, reader: DirectoryReader, worker: Worker, device: dev_t) -> Kept? {
+        worker.begin(node)
+        let listing = Result { () throws(POSIXError) in try lister(node.path, reader) }
+        worker.end()
+        guard node.state.compareExchange(
+            expected: Node.listing, desired: Node.listed, ordering: .acquiringAndReleasing
+        ).exchanged else {
             return nil
+        }
+        let entries: [DirectoryEntry]
+        switch listing {
+        case .success(let listed):
+            entries = listed
+        case .failure(let error):
+            failed(node, code: error.code.rawValue)
+            return Kept(next: nil)
         }
 
         let visit = delegate.visit(VisitedDirectory(
@@ -260,7 +357,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         if node.remaining.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 {
             complete(node, record: record)
         }
-        return keep
+        return Kept(next: keep)
     }
 
     /// Called when a directory and everything below it is counted. Propagates
@@ -309,6 +406,11 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         let context: Delegate.Context
         /// Subdirectories not yet complete, plus one until it's listed.
         let remaining = Atomic<Int>(1)
+        /// Who finishes the listing: its worker, or the watchdog giving up.
+        let state = Atomic<UInt8>(Node.listing)
+        static var listing: UInt8 { 0 }
+        static var listed: UInt8 { 1 }
+        static var givenUp: UInt8 { 2 }
         let bytes: Atomic<Int64>
 
         init(
@@ -327,6 +429,34 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     }
 }
 
+extension Walker {
+    /// What one walker thread is doing, for the watchdog.
+    final class Worker: Sendable {
+        /// The folder being listed and the last sign of progress (uptime ns).
+        private let current = Mutex<(node: Node, since: UInt64)?>(nil)
+        private let abandoned = Atomic<Bool>(false)
+
+        var listing: (Node, UInt64)? { current.withLock { $0.map { ($0.node, $0.since) } } }
+        var isAbandoned: Bool { abandoned.load(ordering: .relaxed) }
+
+        func begin(_ node: Node) {
+            current.withLock { $0 = (node, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) }
+        }
+
+        func beat() {
+            current.withLock { $0?.since = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
+        }
+
+        func end() {
+            current.withLock { $0 = nil }
+        }
+
+        func abandon() {
+            abandoned.store(true, ordering: .relaxed)
+        }
+    }
+}
+
 /// A LIFO work list shared by the walker threads. `pop` blocks while other
 /// threads may still produce work and returns nil once all of it is done.
 final class WorkQueue<Element: Sendable>: @unchecked Sendable {
@@ -336,6 +466,15 @@ final class WorkQueue<Element: Sendable>: @unchecked Sendable {
     /// Threads holding work popped from this queue.
     private var busy = 0
     private var finished = false
+
+    /// Waits until all work is done, at most `timeout` seconds. Returns
+    /// whether it's done.
+    func waitUntilFinished(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        if !finished { condition.wait(until: Date(timeIntervalSinceNow: timeout)) }
+        return finished
+    }
 
     func push(_ elements: [Element]) {
         condition.lock()

@@ -29,6 +29,9 @@ final class DirectoryReader {
     private let buffer: UnsafeMutableRawBufferPointer
     /// getattrlistbulk calls made so far; lets tests check batching.
     private(set) var bulkCalls = 0
+    /// Called after every batch, so a watchdog can tell a big folder that is
+    /// still being read from a call that is stuck.
+    var onBatch: (() -> Void)?
 
     /// - Parameter bufferSize: bytes per getattrlistbulk call. One record is
     ///   about 80 bytes plus the name, so the default fits ~1,500 entries.
@@ -64,6 +67,7 @@ final class DirectoryReader {
         while true {
             let count = getattrlistbulk(fd, &request, buffer.baseAddress!, buffer.count, 0)
             bulkCalls += 1
+            onBatch?()
             if count < 0 {
                 let code = errno
                 // Some file systems don't support it at all; they fail at once.

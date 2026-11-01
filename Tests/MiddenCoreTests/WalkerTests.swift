@@ -118,6 +118,69 @@ private func duBytes(_ path: String) throws -> Int64 {
         #expect(result.unreadable == 1)
     }
 
+    @Test func givesUpAListingThatBlocks() throws {
+        let dir = try TempDir()
+        try dir.write("fine/a.bin", bytes: 300_000)
+        try dir.write("fine/deeper/b.bin", bytes: 200_000)
+        try dir.write("blocked/c.bin", bytes: 500_000)
+        try dir.write("blocked/inside/d.bin", bytes: 100_000)
+        let blocked = dir.path("blocked")
+        // Stands in for open() waiting on a privacy prompt nobody answers.
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let walker = Walker(
+            root: dir.path, delegate: SizeOnly(), threadCount: 2, stallTimeout: 0.3
+        ) { path, reader throws(POSIXError) in
+            if path == blocked { gate.wait() }
+            return try reader.entries(atPath: path)
+        }
+
+        let start = Date()
+        let result = try walker.run()
+        #expect(Date().timeIntervalSince(start) < 5)
+        #expect(result.unreadable == 1)
+        #expect(result.stalled == [blocked])
+        #expect(result.rootError == nil)
+        #expect(result.totalBytes == (try duBytes(dir.path)) - (try duBytes(blocked)))
+        let children = Dictionary(uniqueKeysWithValues: (result.root?.children ?? []).map { ($0.name, $0.bytes) })
+        #expect(children["fine"] == (try duBytes(dir.path("fine"))))
+    }
+
+    @Test func blockedRootIsAnError() throws {
+        let dir = try TempDir()
+        try dir.write("a.bin", bytes: 1_000)
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let root = dir.path
+        let walker = Walker(root: root, delegate: SizeOnly(), stallTimeout: 0.2) { path, reader throws(POSIXError) in
+            if path == root { gate.wait() }
+            return try reader.entries(atPath: path)
+        }
+        let result = try walker.run()
+        #expect(result.rootError?.code == .ETIMEDOUT)
+    }
+
+    @Test func keepsASlowListingThatMakesProgress() throws {
+        let dir = try TempDir()
+        try dir.write("big/a.bin", bytes: 4_096)
+        let big = dir.path("big")
+        let walker = Walker(root: dir.path, delegate: SizeOnly(), stallTimeout: 0.3) { path, reader throws(POSIXError) in
+            if path == big {
+                // Slower than the timeout overall, but beating like a reader
+                // working through a huge folder batch by batch.
+                for _ in 0..<8 {
+                    Thread.sleep(forTimeInterval: 0.1)
+                    reader.onBatch?()
+                }
+            }
+            return try reader.entries(atPath: path)
+        }
+        let result = try walker.run()
+        #expect(result.stalled.isEmpty)
+        #expect(result.unreadable == 0)
+        #expect(result.totalBytes == (try duBytes(dir.path)))
+    }
+
     @Test func stopsWhenCancelled() throws {
         let dir = try TempDir()
         try makeTree(dir)

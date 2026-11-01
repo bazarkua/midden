@@ -126,6 +126,11 @@ struct ScanEngine {
 }
 
 enum WalkDefaults {
+    /// A folder listing that makes no progress for this long is given up,
+    /// e.g. open() waiting on a privacy prompt. A large folder keeps making
+    /// progress batch by batch, so this only catches calls that are stuck.
+    static let stallTimeout: TimeInterval = 5
+
     /// Listing is mostly kernel time. Walking ~/Work (2.6M items) on a
     /// 14-core M-series Mac took 39 s on 1 thread, 11 s on 4, 8.4–9.5 s on
     /// 8 and 12, and got slower again on 16 and 24.
