@@ -48,7 +48,9 @@ struct ProjectFacts: Sendable, Hashable {
 
     init(entries: [DirectoryEntry]) {
         for entry in entries {
-            switch entry.name {
+            // A marker is a regular file: a folder or a symlink named
+            // package.json says nothing about the project.
+            switch entry.kind == .file ? entry.name : "" {
             case "package.json": markers.insert(.packageJSON)
             case "Cargo.toml": markers.insert(.cargoToml)
             case "Podfile": markers.insert(.podfile)

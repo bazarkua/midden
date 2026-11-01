@@ -82,6 +82,27 @@ extension Reclassification {
         if testCase.expected == nil { #expect(result.isNothing || result.insideAncestor != nil) }
     }
 
+    /// A marker counts only as a regular file. A folder or a symlink named
+    /// package.json doesn't make the folder next to it a project, so its
+    /// node_modules isn't a build folder.
+    @Test func markersMustBeRegularFiles() throws {
+        let home = try TempDir("home")
+        try home.write("code/real/package.json", text: "{}")
+        try home.write("code/real/node_modules/dep/index.js", bytes: 100)
+        #expect(try reclassify(home, "code/real/node_modules").buildFolder == .nodeModules)
+
+        try home.write("code/folder/package.json/inside.txt", text: "not a manifest")
+        try home.write("code/folder/node_modules/dep/index.js", bytes: 100)
+        #expect(try reclassify(home, "code/folder/node_modules").buildFolder == nil)
+
+        try home.write("elsewhere/package.json", text: "{}")
+        try home.mkdir("code/linked")
+        try FileManager.default.createSymbolicLink(
+            atPath: home.path("code/linked/package.json"), withDestinationPath: home.path("elsewhere/package.json"))
+        try home.write("code/linked/node_modules/dep/index.js", bytes: 100)
+        #expect(try reclassify(home, "code/linked/node_modules").buildFolder == nil)
+    }
+
     @Test func nestedBuildFoldersBelongToTheOuterOne() throws {
         let home = try TempDir("home")
         try home.write("app/package.json", bytes: 10)
