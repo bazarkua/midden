@@ -9,8 +9,10 @@ import Synchronization
 ///
 /// - Phases have fixed shares of the bar. Reading the folders is 85%,
 ///   checking worktrees 12%, simulators 1% and building the report 2%.
-///   Reading dominates on every Mac measured; the worktree share covers
-///   sizing worktrees outside home and auditing each one with git.
+///   Reading is most of a scan: about 70% of the time on a Mac with 69
+///   worktrees (20 GB of them outside home to size), and nearly all of it
+///   with few worktrees. The time-left estimate follows the real pace, so
+///   a slower worktree phase shows up there rather than as a stuck bar.
 /// - Reading progress is bytes counted so far over the bytes expected. The
 ///   app passes the previous scan's total when it has one. Otherwise the
 ///   denominator is the volume's used space (total minus free), which can
