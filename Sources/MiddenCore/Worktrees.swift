@@ -92,12 +92,16 @@ struct WorktreeAuditor: Sendable {
         var checks: [SafetyCheck] = []
         var steps: [String] = []
 
-        let status = run("status", "--porcelain")
+        // Every option that decides what status shows is given explicitly, so
+        // the user's configuration (status.showUntrackedFiles=no, submodule
+        // ignore settings) can't hide changes.
+        let status = run(
+            "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
         if !status.succeeded {
             checks.append(SafetyCheck(id: "uncommitted", title: "No uncommitted changes", passed: false, detail: status.message))
             steps.append("check it with `git -C \(Self.quoted(path)) status`")
         } else {
-            let changed = status.output.split(separator: "\n").map { String($0.dropFirst(3)) }
+            let changed = Self.changedPaths(porcelainZ: status.output)
             if changed.isEmpty {
                 checks.append(SafetyCheck(
                     id: "uncommitted", title: "No uncommitted changes", passed: true,
@@ -270,6 +274,21 @@ struct WorktreeAuditor: Sendable {
         else { return nil }
         let fields = header[header.index(after: emailEnd)...].split(separator: " ")
         return fields.first.flatMap { Double($0) }
+    }
+
+    /// The paths in `git status --porcelain=v1 -z` output. Each entry is
+    /// `XY <path>` ending in NUL; a rename or copy is followed by one more
+    /// NUL-terminated field, its original path, which isn't a second change.
+    static func changedPaths(porcelainZ output: String) -> [String] {
+        var paths: [String] = []
+        var fields = output.split(separator: "\0", omittingEmptySubsequences: true).makeIterator()
+        while let field = fields.next() {
+            guard field.count > 3 else { continue }
+            let state = field.prefix(2)
+            paths.append(String(field.dropFirst(3)))
+            if state.contains("R") || state.contains("C") { _ = fields.next() }
+        }
+        return paths
     }
 
     static func quoted(_ path: String) -> String {

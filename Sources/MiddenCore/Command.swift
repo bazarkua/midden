@@ -25,12 +25,18 @@ enum Sandbox {
 /// Call it from a thread that may block, never from the cooperative pool.
 enum Command {
     /// For the git commands Midden runs. No optional locks: `git status`
-    /// must not rewrite the index of a worktree Midden only looks at. And no
+    /// must not rewrite the index of a worktree Midden only looks at. No
     /// file-system monitor: with core.fsmonitor=true, git would start a
-    /// daemon in every worktree Midden checks and leave it running.
+    /// daemon in every worktree Midden checks and leave it running. And
+    /// untracked files always shown: `git worktree remove` checks that a
+    /// worktree is clean with its own `git status`, which would otherwise
+    /// follow a user's status.showUntrackedFiles=no and remove a worktree
+    /// holding untracked files. These settings outrank every config file.
     static let quietGit = [
         "GIT_OPTIONAL_LOCKS": "0",
-        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "status.showUntrackedFiles", "GIT_CONFIG_VALUE_1": "all",
     ]
 
     /// Applied to the environment of every command: a value sets a
