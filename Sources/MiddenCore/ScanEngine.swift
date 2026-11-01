@@ -19,7 +19,9 @@ struct ScanEngine {
         }
         let disk = System.diskSpace(home)
         let estimator = ProgressEstimator(
-            expectedBytes: options.expectedBytes ?? max(disk.total - disk.free, 1), report: progress)
+            expectedBytes: options.expectedBytes ?? max(disk.total - disk.free, 1),
+            expectedItems: options.expectedItems ?? System.usedInodes(home),
+            report: progress)
         estimator.begin(.preparing, detail: "Checking access")
 
         // Without Full Disk Access, protected folders are skipped rather than

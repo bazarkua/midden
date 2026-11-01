@@ -21,6 +21,14 @@ enum System {
             total: Int64(info.f_blocks) * block, free: Int64(info.f_bavail) * block, volumeName: name)
     }
 
+    /// Files and folders on the volume holding `path`, an upper bound on
+    /// the items under it. Nil when the file system doesn't say.
+    static func usedInodes(_ path: String) -> Int64? {
+        var info = statfs()
+        guard statfs(path, &info) == 0, info.f_files > info.f_ffree else { return nil }
+        return Int64(info.f_files - info.f_ffree)
+    }
+
     /// Without Full Disk Access, macOS refuses to list these folders even to
     /// their owner.
     static func needsFullDiskAccess(home: String) -> Bool {

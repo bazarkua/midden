@@ -120,6 +120,13 @@ struct WalkResult<Mark: Sendable> {
     var root: SizedDirectory<Mark>?
 }
 
+/// How far a walk is, reported a few times per second.
+struct WalkProgress: Sendable {
+    var items: Int64
+    var bytes: Int64
+    var path: String
+}
+
 /// Thread-safe flag a caller sets to stop a walk early.
 final class CancellationFlag: Sendable {
     private let flag = Atomic<Bool>(false)
@@ -174,7 +181,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     /// leaves the root's volume.
     func run(
         cancellation: CancellationFlag = CancellationFlag(),
-        progress: @escaping @Sendable (ScanProgress) -> Void = { _ in }
+        progress: @escaping @Sendable (WalkProgress) -> Void = { _ in }
     ) throws(POSIXError) -> WalkResult<Mark> {
         var info = stat()
         guard lstat(root, &info) == 0 else { throw POSIXError(errno) }
@@ -205,7 +212,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
 
     private func startWorker(
         device: dev_t, cancellation: CancellationFlag,
-        progress: @escaping @Sendable (ScanProgress) -> Void
+        progress: @escaping @Sendable (WalkProgress) -> Void
     ) {
         let worker = Worker()
         let index = workers.withLock { workers in
@@ -229,7 +236,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     /// giving up listings that stopped making progress.
     private func supervise(
         device: dev_t, cancellation: CancellationFlag,
-        progress: @escaping @Sendable (ScanProgress) -> Void
+        progress: @escaping @Sendable (WalkProgress) -> Void
     ) {
         let timeout = UInt64(stallTimeout * 1e9)
         let tick = min(max(stallTimeout / 4, 0.01), 0.25)
@@ -256,7 +263,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         _ worker: Worker,
         device: dev_t,
         cancellation: CancellationFlag,
-        progress: @Sendable (ScanProgress) -> Void
+        progress: @Sendable (WalkProgress) -> Void
     ) {
         let reader = DirectoryReader()
         reader.onBatch = { worker.beat() }
@@ -408,7 +415,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         }
     }
 
-    private func reportProgress(path: String, _ progress: @Sendable (ScanProgress) -> Void) {
+    private func reportProgress(path: String, _ progress: @Sendable (WalkProgress) -> Void) {
         let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         let last = lastProgress.load(ordering: .relaxed)
         guard now &- last >= 200_000_000,
@@ -416,10 +423,10 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
                 expected: last, desired: now, ordering: .relaxed
             ).exchanged
         else { return }
-        progress(ScanProgress(
+        progress(WalkProgress(
             items: items.load(ordering: .relaxed),
             bytes: bytesSeen.load(ordering: .relaxed),
-            currentPath: path))
+            path: path))
     }
 
     /// A directory being counted. Holds its parent until it's complete.

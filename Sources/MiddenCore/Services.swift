@@ -11,6 +11,9 @@ public struct ScanOptions: Sendable {
     /// progress estimate much closer; without it the volume's used space
     /// is the (pessimistic) estimate.
     public var expectedBytes: Int64?
+    /// The previous scan's `itemsScanned`, if the app has one. The walk's
+    /// time follows items more closely than bytes.
+    public var expectedItems: Int64?
     /// Walker threads; nil picks a default for this Mac.
     var threadCount: Int?
     /// Build folders whose project changed more recently are "review".
