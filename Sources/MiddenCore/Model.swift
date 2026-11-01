@@ -115,7 +115,10 @@ public struct SafetyCheck: Codable, Sendable, Hashable {
     /// "locked", "inUse", "lastActivity", "gitInstalled", "gitReadable",
     /// "repositoryExists", "worktreeRecorded";
     /// build folders "projectIdle", "packagesRecorded"; simulators
-    /// "simulatorUnavailable". Empty for checks saved before ids existed.
+    /// "simulatorUnavailable". Findings that a running program can depend
+    /// on (pnpm dlx packages, browser profiles, Homebrew downloads, SwiftPM
+    /// build products and others) also use "inUse". Empty for checks saved
+    /// before ids existed.
     public var id: String
     public var title: String
     public var passed: Bool
