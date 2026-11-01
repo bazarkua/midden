@@ -21,15 +21,18 @@
 // itself and pushes the rest, so it continues depth first and takes the
 // shared lock about once per directory.
 //
-// Directories are opened by full path, as Midden does. --openat opens each
-// one relative to its parent's open descriptor instead, which spares the
-// kernel a lookup of every path component; comparing the two shows what
-// that lookup costs.
+// Two switches measure other strategies, one at a time:
+//   --openat    Open each directory relative to its parent's descriptor
+//               instead of by full path, as Midden does. Spares the kernel a
+//               lookup of every path component, and has no PATH_MAX limit.
+//   --readdir   List with readdir plus one fstatat per entry, as du and find
+//               do, instead of getattrlistbulk. Sizes come from st_blocks.
 //
 // Build: clang -std=c11 -O3 -Wall -Wextra -o cscan cscan.c
-// Usage: cscan [--threads N] [--openat] PATH
+// Usage: cscan [--threads N] [--openat] [--readdir] PATH
 
 #define _DARWIN_C_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <os/lock.h>
@@ -51,6 +54,7 @@
 enum { BUFFER_SIZE = 128 * 1024, SHARDS = 64 };
 
 static bool use_openat = false;
+static bool use_readdir = false;
 static dev_t root_device;
 
 // MARK: Directories to visit
@@ -234,40 +238,53 @@ static work_t child(const work_t *parent, handle_t *handle, const char *name, si
     return (work_t){path, handle};
 }
 
-// Lists one directory, adds its entries to the thread's totals and queues
-// its subdirectories. Returns true with one of them in *next for the calling
-// thread to continue with.
-static bool list(worker_t *w, work_t *work, work_t *next) {
-    int flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
-    int fd = work->parent ? openat(work->parent->fd, work->path, flags) : open(work->path, flags);
-    release(work->parent);
-    if (fd < 0) {
-        if (errno != ENOENT && errno != ENOTDIR) w->errors++;
-        free(work->path);
-        return false;
-    }
+// What a listing found so far: the subdirectories to visit.
+typedef struct {
+    worker_t *worker;
+    const work_t *work;
+    handle_t *handle;
+    size_t children;
+} listing_t;
 
-    handle_t *handle = NULL;
-    if (use_openat) {
-        handle = malloc(sizeof(handle_t));
-        if (!handle) abort();
-        handle->fd = fd;
+// Counts one entry. The same rules for both ways of listing.
+static void count(listing_t *l, const char *name, size_t length, bool is_directory, dev_t device,
+                  uint64_t inode, uint32_t links, int64_t allocated) {
+    worker_t *w = l->worker;
+    w->items++;
+    if (is_directory) {
+        if (device != root_device) return;  // A mount point: another volume.
+        w->bytes += allocated;
+        if (l->children == w->child_capacity) {
+            w->child_capacity = w->child_capacity ? w->child_capacity * 2 : 256;
+            w->children = realloc(w->children, w->child_capacity * sizeof(work_t));
+            if (!w->children) abort();
+        }
+        w->children[l->children++] = child(l->work, l->handle, name, length);
+    } else if (links <= 1 || first_link((uint64_t)device, inode)) {
+        w->bytes += allocated;
     }
-    size_t children = 0;
+}
+
+// Lists with getattrlistbulk: one call returns a batch of entries with
+// their attributes.
+static void list_bulk(listing_t *l, int fd) {
+    worker_t *w = l->worker;
     bool first_call = true;
     for (;;) {
-        int count = getattrlistbulk(fd, &request, w->buffer, BUFFER_SIZE, 0);
-        if (count < 0) {
+        int entries = getattrlistbulk(fd, &request, w->buffer, BUFFER_SIZE, 0);
+        if (entries < 0) {
             // Midden falls back to readdir for file systems without
             // getattrlistbulk; this yardstick is meant for APFS and says so.
-            if (errno == ENOTSUP && first_call) fprintf(stderr, "cscan: %s: getattrlistbulk not supported\n", work->path);
+            if (errno == ENOTSUP && first_call) {
+                fprintf(stderr, "cscan: %s: getattrlistbulk not supported\n", l->work->path);
+            }
             w->errors++;
-            break;
+            return;
         }
         first_call = false;
-        if (count == 0) break;
+        if (entries == 0) return;
         const char *record = w->buffer;
-        for (int i = 0; i < count; i++) {
+        for (int i = 0; i < entries; i++) {
             uint32_t length = READ(uint32_t, record);
             const char *field = record + sizeof(uint32_t);
             attribute_set_t returned = READ(attribute_set_t, field);
@@ -315,33 +332,67 @@ static bool list(worker_t *w, work_t *work, work_t *next) {
                 allocated = READ(off_t, field);
                 field += sizeof(off_t);
             }
-
-            w->items++;
-            if (type == VDIR) {
-                if (device != root_device) continue;  // A mount point: another volume.
-                w->bytes += allocated;
-                if (children == w->child_capacity) {
-                    w->child_capacity = w->child_capacity ? w->child_capacity * 2 : 256;
-                    w->children = realloc(w->children, w->child_capacity * sizeof(work_t));
-                    if (!w->children) abort();
-                }
-                w->children[children++] = child(work, handle, name, name_length);
-            } else if (links <= 1 || first_link((uint64_t)device, inode)) {
-                w->bytes += allocated;
-            }
+            count(l, name, name_length, type == VDIR, device, inode, links, allocated);
         }
+    }
+}
+
+// Lists the classic way, as du and find do: readdir, then one fstatat per
+// entry. Same rules as Midden's own readdir fallback: an entry that is gone
+// by the time it's stat'ed is skipped. Takes ownership of `fd`.
+static void list_readdir(listing_t *l, int fd) {
+    DIR *dir = fdopendir(fd);
+    if (!dir) {
+        close(fd);
+        l->worker->errors++;
+        return;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(dir))) {
+        const char *name = entry->d_name;
+        if (name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) continue;
+        struct stat info;
+        if (fstatat(dirfd(dir), name, &info, AT_SYMLINK_NOFOLLOW) != 0) continue;
+        count(l, name, entry->d_namlen, S_ISDIR(info.st_mode), info.st_dev, info.st_ino,
+              (uint32_t)info.st_nlink, (int64_t)info.st_blocks * 512);
+    }
+    closedir(dir);
+}
+
+// Lists one directory, adds its entries to the thread's totals and queues
+// its subdirectories. Returns true with one of them in *next for the calling
+// thread to continue with.
+static bool list(worker_t *w, work_t *work, work_t *next) {
+    int flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+    int fd = work->parent ? openat(work->parent->fd, work->path, flags) : open(work->path, flags);
+    release(work->parent);
+    if (fd < 0) {
+        if (errno != ENOENT && errno != ENOTDIR) w->errors++;
+        free(work->path);
+        return false;
+    }
+
+    listing_t l = {w, work, NULL, 0};
+    if (use_openat) {
+        l.handle = malloc(sizeof(handle_t));
+        if (!l.handle) abort();
+        l.handle->fd = fd;
+    }
+    if (use_readdir) {
+        // readdir owns the descriptor it reads; subdirectories opened
+        // relative to this one need their own.
+        list_readdir(&l, use_openat ? dup(fd) : fd);
+    } else {
+        list_bulk(&l, fd);
     }
     free(work->path);
 
-    if (handle) {
-        if (children == 0) {
-            close(fd);
-            free(handle);
-        } else {
-            atomic_init(&handle->pending, (int)children);
-        }
+    size_t children = l.children;
+    if (use_openat && children > 0) {
+        atomic_init(&l.handle->pending, (int)children);
     } else {
-        close(fd);
+        if (!use_readdir || use_openat) close(fd);
+        free(l.handle);
     }
     if (children == 0) return false;
     *next = w->children[children - 1];
@@ -383,15 +434,17 @@ int main(int argc, char **argv) {
             threads = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--openat") == 0) {
             use_openat = true;
+        } else if (strcmp(argv[i], "--readdir") == 0) {
+            use_readdir = true;
         } else if (argv[i][0] != '-' && !root) {
             root = argv[i];
         } else {
-            fprintf(stderr, "usage: cscan [--threads N] [--openat] PATH\n");
-            return 2;
+            root = NULL;
+            break;
         }
     }
     if (!root || threads < 1) {
-        fprintf(stderr, "usage: cscan [--threads N] [--openat] PATH\n");
+        fprintf(stderr, "usage: cscan [--threads N] [--openat] [--readdir] PATH\n");
         return 2;
     }
     if (use_openat) {
@@ -431,8 +484,8 @@ int main(int argc, char **argv) {
     }
     clock_gettime(CLOCK_MONOTONIC, &end);
     double seconds = (double)(end.tv_sec - start.tv_sec) + (double)(end.tv_nsec - start.tv_nsec) / 1e9;
-    printf("items=%lld bytes=%lld directories=%lld errors=%lld threads=%d mode=%s seconds=%.3f\n",
+    printf("items=%lld bytes=%lld directories=%lld errors=%lld threads=%d open=%s list=%s seconds=%.3f\n",
            (long long)items, (long long)bytes, (long long)directories, (long long)errors, threads,
-           use_openat ? "openat" : "paths", seconds);
+           use_openat ? "openat" : "path", use_readdir ? "readdir" : "bulk", seconds);
     return 0;
 }
