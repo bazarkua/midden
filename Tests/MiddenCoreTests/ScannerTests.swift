@@ -76,6 +76,13 @@ import Testing
         #expect(byPath[worktree + "/node_modules"] == nil)
 
         #expect(report.findings.map(\.bytes) == report.findings.map(\.bytes).sorted(by: >))
+        let known: Set<String> = [
+            "uncommitted", "onBranch", "locked", "inUse", "lastActivity", "gitInstalled",
+            "gitReadable", "repositoryExists", "projectIdle", "packagesRecorded", "simulatorUnavailable",
+        ]
+        #expect(report.findings.flatMap(\.checks).allSatisfy { known.contains($0.id) })
+        #expect(tree.checks.map(\.id) == ["uncommitted", "onBranch", "locked", "inUse", "lastActivity"])
+        #expect(report.disk.volumeName?.isEmpty == false)
         #expect(report.home == home.path)
         #expect(report.needsFullDiskAccess == false)
         #expect(report.unreadableCount == 0)
@@ -129,6 +136,33 @@ import Testing
         await #expect(throws: MiddenError.self) {
             try await Scanner(options: ScanOptions(home: missing)).scan()
         }
+    }
+
+    @Test func cancellingTheTaskThrowsCancelled() async throws {
+        let (home, _) = try makeHome()
+        let scanner = Scanner(options: ScanOptions(home: home.url))
+        let task = Task {
+            // Starts scanning only once cancelled, so the outcome is deterministic.
+            while !Task.isCancelled { await Task.yield() }
+            return try await scanner.scan()
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("a cancelled scan returned a report")
+        } catch {
+            #expect(error as? MiddenError == .cancelled)
+        }
+    }
+
+    @Test func probesFullDiskAccess() throws {
+        let home = try TempDir("home")
+        // No protected folders exist in a fake home, so nothing is refused.
+        #expect(FullDiskAccess.isGranted(home: home.url))
+        try home.mkdir("Library/Safari")
+        chmod(home.path("Library/Safari"), 0o000)
+        defer { chmod(home.path("Library/Safari"), 0o755) }
+        #expect(!FullDiskAccess.isGranted(home: home.url))
     }
 
     @Test func parsesSimctlOutput() throws {

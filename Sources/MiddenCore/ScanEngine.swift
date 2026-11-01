@@ -19,8 +19,7 @@ struct ScanEngine {
         // Without Full Disk Access, protected folders are skipped rather than
         // opened: opening some of them waits on a permission prompt. The probe
         // itself gets a deadline for the same reason.
-        let fullDiskAccess = options.fullDiskAccess
-            ?? (System.withDeadline(WalkDefaults.stallTimeout) { !System.needsFullDiskAccess(home: home) } ?? false)
+        let fullDiskAccess = options.fullDiskAccess ?? FullDiskAccess.isGranted(home: URL(fileURLWithPath: home))
         let delegate = ScanDelegate(skipProtected: !fullDiskAccess)
         let walk: WalkResult<DirectoryMatch>
         do {

@@ -106,14 +106,30 @@ public enum CleanAction: Codable, Sendable, Hashable {
 /// One check Midden ran before calling something safe, shown to the user so
 /// the verdict is explainable. Example: "No uncommitted changes".
 public struct SafetyCheck: Codable, Sendable, Hashable {
+    /// What is checked, stable across versions while titles may be reworded:
+    /// worktrees use "uncommitted", "onBranch", "locked", "inUse",
+    /// "lastActivity", "gitInstalled", "gitReadable", "repositoryExists";
+    /// build folders "projectIdle", "packagesRecorded"; simulators
+    /// "simulatorUnavailable". Empty for checks saved before ids existed.
+    public var id: String
     public var title: String
     public var passed: Bool
     public var detail: String
 
-    public init(title: String, passed: Bool, detail: String) {
+    public init(id: String = "", title: String, passed: Bool, detail: String) {
+        self.id = id
         self.title = title
         self.passed = passed
         self.detail = detail
+    }
+
+    /// Also reads checks saved before `id` existed.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        title = try container.decode(String.self, forKey: .title)
+        passed = try container.decode(Bool.self, forKey: .passed)
+        detail = try container.decode(String.self, forKey: .detail)
     }
 }
 
@@ -209,10 +225,13 @@ public struct FolderUsage: Codable, Sendable, Hashable {
 public struct DiskSpace: Codable, Sendable, Hashable {
     public var total: Int64
     public var free: Int64
+    /// The volume's name as Finder shows it, e.g. "Macintosh HD".
+    public var volumeName: String?
 
-    public init(total: Int64, free: Int64) {
+    public init(total: Int64, free: Int64, volumeName: String? = nil) {
         self.total = total
         self.free = free
+        self.volumeName = volumeName
     }
 }
 

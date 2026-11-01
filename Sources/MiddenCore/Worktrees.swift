@@ -42,7 +42,7 @@ struct WorktreeAuditor: Sendable {
                 repositoryName: (worktree.path as NSString).lastPathComponent, repository: nil,
                 branch: nil,
                 checks: [SafetyCheck(
-                    title: "Git is installed", passed: false,
+                    id: "gitInstalled", title: "Git is installed", passed: false,
                     detail: "Midden needs git to check this worktree for uncommitted work, and found none.")],
                 safety: .info,
                 action: .manual("Install Xcode or the Command Line Tools to check worktrees (`xcode-select --install`), then scan again."),
@@ -60,7 +60,7 @@ struct WorktreeAuditor: Sendable {
                 repositoryName: (repositoryPath as NSString).lastPathComponent, repository: nil,
                 branch: nil,
                 checks: [SafetyCheck(
-                    title: "Its repository exists", passed: false,
+                    id: "repositoryExists", title: "Its repository exists", passed: false,
                     detail: "Its .git file points into \(repositoryPath), which no longer exists, so nothing can check it for uncommitted work.")],
                 safety: .info,
                 action: .manual("Git can't remove it because its repository is gone. If you don't need its files, delete the folder in Finder."),
@@ -78,7 +78,7 @@ struct WorktreeAuditor: Sendable {
         guard head.succeeded, headLines.count == 2 else {
             return blocked(
                 worktree, repositoryName: nil, branch: nil, lastActivity: lastActivity,
-                checks: [SafetyCheck(title: "Git can read it", passed: false, detail: head.message)],
+                checks: [SafetyCheck(id: "gitReadable", title: "Git can read it", passed: false, detail: head.message)],
                 steps: ["check it with `git -C \(Self.quoted(path)) status`"], repository: nil)
         }
         let commonDir = headLines[0]
@@ -96,18 +96,18 @@ struct WorktreeAuditor: Sendable {
 
         let status = run("status", "--porcelain")
         if !status.succeeded {
-            checks.append(SafetyCheck(title: "No uncommitted changes", passed: false, detail: status.message))
+            checks.append(SafetyCheck(id: "uncommitted", title: "No uncommitted changes", passed: false, detail: status.message))
             steps.append("check it with `git -C \(Self.quoted(path)) status`")
         } else {
             let changed = status.output.split(separator: "\n").map { String($0.dropFirst(3)) }
             if changed.isEmpty {
                 checks.append(SafetyCheck(
-                    title: "No uncommitted changes", passed: true,
+                    id: "uncommitted", title: "No uncommitted changes", passed: true,
                     detail: "git status shows no changed or untracked files."))
             } else {
                 let sample = changed.prefix(3).joined(separator: ", ") + (changed.count > 3 ? ", …" : "")
                 checks.append(SafetyCheck(
-                    title: "No uncommitted changes", passed: false,
+                    id: "uncommitted", title: "No uncommitted changes", passed: false,
                     detail: "\(changed.count) changed or untracked \(changed.count == 1 ? "file" : "files"): \(sample)"))
                 steps.append("commit or discard the changes")
             }
@@ -118,16 +118,16 @@ struct WorktreeAuditor: Sendable {
             "refs/heads", "refs/remotes")
         let containing = refs.output.trimmingCharacters(in: .whitespacesAndNewlines)
         if !refs.succeeded {
-            checks.append(SafetyCheck(title: "Commits are on a branch", passed: false, detail: refs.message))
+            checks.append(SafetyCheck(id: "onBranch", title: "Commits are on a branch", passed: false, detail: refs.message))
             steps.append("check its commits with `git -C \(Self.quoted(path)) log`")
         } else if containing.isEmpty {
             checks.append(SafetyCheck(
-                title: "Commits are on a branch", passed: false,
+                id: "onBranch", title: "Commits are on a branch", passed: false,
                 detail: "The checked-out commit isn't on any branch, so removing the worktree could lose it."))
             steps.append("create a branch for its commits (`git -C \(Self.quoted(path)) switch -c <name>`)")
         } else {
             checks.append(SafetyCheck(
-                title: "Commits are on a branch", passed: true,
+                id: "onBranch", title: "Commits are on a branch", passed: true,
                 detail: "The checked-out commit is on \(containing), which stays in the repository."))
         }
 
@@ -136,28 +136,28 @@ struct WorktreeAuditor: Sendable {
             let reason = Classifier.readSmallFile(lockFile)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             checks.append(SafetyCheck(
-                title: "Not locked", passed: false,
+                id: "locked", title: "Not locked", passed: false,
                 detail: "Locked with `git worktree lock`" + (reason.isEmpty ? "." : ": \(reason)")))
             steps.append("unlock it with `git worktree unlock` if it's no longer needed")
         } else {
-            checks.append(SafetyCheck(title: "Not locked", passed: true, detail: "Nobody locked it with `git worktree lock`."))
+            checks.append(SafetyCheck(id: "locked", title: "Not locked", passed: true, detail: "Nobody locked it with `git worktree lock`."))
         }
 
         let users = processes.inside(path)
         if users.isEmpty, let failure = processes.failure {
             // Not seeing a program here proves nothing if the listing is incomplete.
             checks.append(SafetyCheck(
-                title: "Not in use", passed: false,
+                id: "inUse", title: "Not in use", passed: false,
                 detail: "Couldn't check running programs: \(failure)."))
             steps.append("scan again, and quit any program that may be working in it")
         } else if users.isEmpty {
             checks.append(SafetyCheck(
-                title: "Not in use", passed: true,
+                id: "inUse", title: "Not in use", passed: true,
                 detail: "No running program has its working directory in it."))
         } else {
             let names = users.prefix(3).map { "\($0.command) (pid \($0.pid))" }.joined(separator: ", ")
             checks.append(SafetyCheck(
-                title: "Not in use", passed: false,
+                id: "inUse", title: "Not in use", passed: false,
                 detail: "In use by \(names)\(users.count > 3 ? " and others" : "")."))
             steps.append("quit the programs working in it")
         }
@@ -172,7 +172,7 @@ struct WorktreeAuditor: Sendable {
         // and the verdict stays "review".
         let idle = lastActivity.map { now.timeIntervalSince($0) >= activeWindow } ?? false
         checks.append(SafetyCheck(
-            title: "Not used lately", passed: idle,
+            id: "lastActivity", title: "Not used lately", passed: idle,
             detail: lastActivity.map { "Last checkout or commit \(Dates.describe($0, now: now))." }
                 ?? "Couldn't tell when it was last used."))
         return WorktreeAudit(

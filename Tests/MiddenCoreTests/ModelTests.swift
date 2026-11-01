@@ -15,6 +15,13 @@ import Testing
     #expect(roundTrip.freedBytes == 42)
 }
 
+@Test func readsSafetyChecksSavedBeforeIds() throws {
+    let old = Data(#"{"title": "Not locked", "passed": true, "detail": "d"}"#.utf8)
+    let check = try JSONDecoder().decode(SafetyCheck.self, from: old)
+    #expect(check.id == "")
+    #expect(check.title == "Not locked")
+}
+
 @Test func manualActionsAreNotAutomatic() {
     #expect(CleanAction.manual("Do it in Finder").isAutomatic == false)
     #expect(CleanAction.removeDirectory.isAutomatic)

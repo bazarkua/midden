@@ -15,7 +15,10 @@ enum System {
         var info = statfs()
         guard statfs(path, &info) == 0 else { return DiskSpace(total: 0, free: 0) }
         let block = Int64(info.f_bsize)
-        return DiskSpace(total: Int64(info.f_blocks) * block, free: Int64(info.f_bavail) * block)
+        let name = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeLocalizedNameKey])
+            .volumeLocalizedName
+        return DiskSpace(
+            total: Int64(info.f_blocks) * block, free: Int64(info.f_bavail) * block, volumeName: name)
     }
 
     /// Without Full Disk Access, macOS refuses to list these folders even to

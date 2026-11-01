@@ -25,7 +25,23 @@ public struct ScanOptions: Sendable {
     }
 }
 
-public enum MiddenError: Error, Sendable {
+/// Whether this process has Full Disk Access.
+public enum FullDiskAccess {
+    /// Tries to list folders macOS opens only to apps with Full Disk Access
+    /// (~/Library/Safari, ~/Library/Mail, ~/.Trash). A refusal means no
+    /// access; folders that don't exist prove nothing either way. Gives up
+    /// after a few seconds and returns false, so it never hangs the caller.
+    /// Blocks: call it off the main thread.
+    public static func isGranted(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> Bool {
+        let path = (try? System.canonicalPath(home.path)) ?? home.path
+        return System.withDeadline(WalkDefaults.stallTimeout) { !System.needsFullDiskAccess(home: path) }
+            ?? false
+    }
+}
+
+public enum MiddenError: Error, Sendable, Equatable {
     case notImplemented
     /// The scanning task was cancelled.
     case cancelled
@@ -55,6 +71,10 @@ public struct Scanner: Sendable {
 
     /// Scans `options.home`. `progress` is called from a background thread a
     /// few times per second.
+    ///
+    /// Cancelling the task that awaits this stops the walk within a folder
+    /// listing or so and throws `MiddenError.cancelled`. Throws
+    /// `MiddenError.unreadable` when the folder can't be read at all.
     public func scan(
         progress: @escaping @Sendable (ScanProgress) -> Void = { _ in }
     ) async throws -> ScanReport {

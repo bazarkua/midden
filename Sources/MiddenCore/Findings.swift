@@ -50,7 +50,7 @@ enum Findings {
         if let lastChange {
             idle = now.timeIntervalSince(lastChange) >= idleWindow
             checks.append(SafetyCheck(
-                title: "Project unchanged for \(idleDays) days", passed: idle,
+                id: "projectIdle", title: "Project unchanged for \(idleDays) days", passed: idle,
                 detail: "Last change in “\(project)” was \(Dates.describe(lastChange, now: now))."))
         } else {
             idle = true
@@ -58,7 +58,7 @@ enum Findings {
         if match.kind == .pythonEnvironment {
             let recorded = !match.markers.isDisjoint(with: [.pythonRequirements, .uvLock])
             checks.append(SafetyCheck(
-                title: "Packages are written down", passed: recorded,
+                id: "packagesRecorded", title: "Packages are written down", passed: recorded,
                 detail: recorded
                     ? "“\(project)” has a requirements, pyproject.toml or lock file to reinstall from."
                     : "“\(project)” has no requirements.txt, pyproject.toml or lock file."))
@@ -157,7 +157,7 @@ enum Findings {
                 data in it.
                 """,
             checks: [SafetyCheck(
-                title: "Unavailable", passed: true,
+                id: "simulatorUnavailable", title: "Unavailable", passed: true,
                 detail: device.availabilityError ?? "simctl reports it as unavailable.")],
             action: .run(["xcrun", "simctl", "delete", device.udid]))
     }
