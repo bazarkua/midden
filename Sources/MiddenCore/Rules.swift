@@ -14,7 +14,8 @@ struct Rule: Sendable {
     var paths: [String]
     var category: Category
     var safety: Safety
-    /// `{name}` is the folder's name, `{app}` the app the `*` matched.
+    /// `{name}` is the folder's name, `{app}` the app the `*` matched (or
+    /// the fixed app), `{wildcard}` the folder name the `*` matched.
     var title: String
     var group: String
     var explanation: String
@@ -814,6 +815,17 @@ enum RuleCatalog {
                 """,
             action: .removeDirectory,
             app: .wildcard),
+        // Sites' service workers keep offline copies of web apps in each
+        // Chromium profile's Service Worker/CacheStorage. That's site data,
+        // apart from the HTTP cache and from cookies, IndexedDB and Local
+        // Storage, which stay. Only the profile folders of the browsers'
+        // standard locations; a profile elsewhere isn't matched.
+        siteCache("Library/Application Support/Google/Chrome", AppHint(name: "Google Chrome", bundleID: "com.google.Chrome")),
+        siteCache("Library/Application Support/BraveSoftware/Brave-Browser", AppHint(name: "Brave", bundleID: "com.brave.Browser")),
+        siteCache("Library/Application Support/Microsoft Edge", AppHint(name: "Microsoft Edge", bundleID: "com.microsoft.edgemac")),
+        siteCache("Library/Application Support/Vivaldi", AppHint(name: "Vivaldi", bundleID: "com.vivaldi.Vivaldi")),
+        siteCache("Library/Application Support/Arc/User Data", AppHint(name: "Arc", bundleID: "company.thebrowser.Browser")),
+        siteCache("Library/Application Support/Dia/User Data", AppHint(name: "Dia")),
         // Electron apps keep Chromium's caches in their user data folder in
         // Application Support: Cache (the HTTP cache), Code Cache (compiled
         // JavaScript) and GPUCache (compiled shaders), next to their
@@ -909,6 +921,24 @@ enum RuleCatalog {
 
     static let deviceSupport = ["iOS", "watchOS", "tvOS", "visionOS"].map {
         "Library/Developer/Xcode/\($0) DeviceSupport"
+    }
+
+    /// A Chromium browser profile's Cache Storage, for any profile folder
+    /// (`*`: Default, Profile 1, ...) of the browser's user data folder.
+    private static func siteCache(_ root: String, _ app: AppHint) -> Rule {
+        Rule(
+            paths: [root + "/*/Service Worker/CacheStorage"],
+            category: .appCaches, safety: .review,
+            title: "{app} offline site data ({wildcard})", group: "{app}",
+            explanation: """
+                Copies of websites that sites' service workers keep in your {app} profile \
+                “{wildcard}”, so they load faster and work offline. You stay signed in: \
+                cookies and the sites' other data stay. Sites you use offline may not work \
+                offline again until you visit them online. Quit {app} first.
+                """,
+            action: .removeContents,
+            app: .fixed(app),
+            checkInUse: true)
     }
 
     /// The Chromium caches in a known Electron app's user data folder.

@@ -117,7 +117,7 @@ import Testing
             // Info findings are never deleted by Midden; the others always can be.
             #expect((rule.safety == .info) == !rule.action.isAutomatic, "\(rule.paths)")
         }
-        #expect(RuleCatalog.maxDepth == 5)
+        #expect(RuleCatalog.maxDepth == 7)
     }
 
     @Test func namesApps() {

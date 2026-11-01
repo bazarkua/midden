@@ -29,6 +29,7 @@ enum Findings {
         func fill(_ template: String) -> String {
             template.replacingOccurrences(of: "{name}", with: name)
                 .replacingOccurrences(of: "{app}", with: appLabel)
+                .replacingOccurrences(of: "{wildcard}", with: match.wildcard ?? name)
         }
         var safety = rule.safety
         var explanation = fill(rule.explanation)
