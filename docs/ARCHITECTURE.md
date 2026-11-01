@@ -94,13 +94,13 @@ A linked worktree is a directory whose `.git` is a file pointing into `<repo>/.g
 | Check | How | Why it matters |
 |---|---|---|
 | No uncommitted or untracked files | `git status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none` with `GIT_OPTIONAL_LOCKS=0` | Removing it would lose that work. The env var keeps a read-only scan from rewriting git's index. Every option is explicit, so a user's `status.showUntrackedFiles=no` can't hide files. |
-| No ignored files of your own | the same call with `--ignored=matching` | `git worktree remove` deletes ignored files without asking. Build output and caches are made again; anything else, such as a `.env` or a local database, makes the worktree Review. |
+| No ignored files | the same call with `--ignored=matching` | `git worktree remove` deletes ignored files without asking, and a name proves nothing about them: an ignored folder is reported as one entry, and one named `build` or `.build` can hold a dependency checkout with local edits. Any ignored entry makes the worktree Review. |
 | HEAD is on a branch | `git for-each-ref --contains HEAD` | Branches survive worktree removal. A detached commit on no branch would not. |
 | Not locked | `<gitdir>/locked` | Someone asked git to keep it. |
 | Not in use | one in-process listing of the user's processes and their working directories (`sysctl` and `proc_pidinfo`) per scan | A running shell, dev server or agent has its working directory inside. |
 | Not used lately | timestamp of the last reflog entry | See below. |
 
-A failed blocking check makes the worktree Info and tells the user what to do about it. Clean but recently used, or holding ignored files of the user's, means Review. Otherwise it is Safe.
+A failed blocking check makes the worktree Info and tells the user what to do about it. Clean but recently used, or holding ignored files, means Review. Otherwise it is Safe.
 
 Git runs without the variables that choose a repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and others) in its environment, and with `status.showUntrackedFiles=all` set through `GIT_CONFIG_COUNT`, which outranks every config file. The second one matters for removal: `git worktree remove` checks cleanliness with its own `git status`, and under a user's `status.showUntrackedFiles=no` it removed a worktree holding an untracked file in a test.
 

@@ -69,7 +69,8 @@ import Testing
 
         let tree = try #require(byPath[worktree])
         #expect(tree.category == .worktrees)
-        #expect(tree.safety == .safe)
+        // Its ignored node_modules keeps it in Review.
+        #expect(tree.safety == .review)
         #expect(tree.group == "repo")
         #expect(tree.breakdown.first?.name == "node_modules")
         // Its node_modules is part of the worktree, not a separate finding.

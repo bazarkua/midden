@@ -34,7 +34,9 @@ private func exists(_ path: String) -> Bool {
         let found = try #require(report.findings.first { $0.path == worktree })
         #expect(found.category == .worktrees)
         #expect(found.group == "repo")
-        #expect(found.safety == .safe)
+        // Its ignored node_modules keeps it in Review.
+        #expect(found.safety == .review)
+        #expect(found.action.isAutomatic)
         #expect(found.bytes >= 2_000_000)
         #expect(found.breakdown.first?.name == "node_modules")
         #expect(found.explanation.contains("outside your home folder"))

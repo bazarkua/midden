@@ -47,12 +47,18 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
         let worktree = try addWorktree(home, repository: repository, branch: "feature")
-        // Ignored files, like node_modules, don't make it dirty.
-        try home.write("worktrees/feature/node_modules/dep/index.js", bytes: 100)
 
         let result = try audit(home, worktree)
         #expect(result.safety == .safe)
         #expect(result.checks.allSatisfy { $0.passed })
+
+        // Ignored files, like node_modules, don't make it dirty, but they
+        // keep it out of Safe: git would delete them without asking.
+        try home.write("worktrees/feature/node_modules/dep/index.js", bytes: 100)
+        let withIgnored = try audit(home, worktree)
+        #expect(withIgnored.safety == .review)
+        #expect(withIgnored.checks.first { $0.id == "uncommitted" }?.passed == true)
+        #expect(withIgnored.checks.first { $0.id == "ignoredFiles" }?.passed == false)
         #expect(result.action == CleanAction.run(["git", "-C", repository, "worktree", "remove", worktree]))
         #expect(result.repositoryName == "repo")
         #expect(result.branch == "feature")

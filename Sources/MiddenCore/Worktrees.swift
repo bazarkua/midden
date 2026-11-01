@@ -112,15 +112,15 @@ struct WorktreeAuditor: Sendable {
         let status = run(
             "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none",
             "--ignored=matching")
-        // Ignored files that aren't build output: `git worktree remove`
-        // deletes them without asking. Nil when status failed.
-        var personalIgnored: [String]?
+        // Ignored files and folders: `git worktree remove` deletes them
+        // without asking. Nil when status failed.
+        var ignoredEntries: [String]?
         if !status.succeeded {
             checks.append(SafetyCheck(id: "uncommitted", title: "No uncommitted changes", passed: false, detail: status.message))
             steps.append("check it with `git -C \(Self.quoted(path)) status`")
         } else {
             let (changed, ignored) = Self.parseStatus(porcelainZ: status.output)
-            personalIgnored = ignored.filter { !Self.isGenerated($0) }
+            ignoredEntries = ignored
             if changed.isEmpty {
                 checks.append(SafetyCheck(
                     id: "uncommitted", title: "No uncommitted changes", passed: true,
@@ -133,17 +133,20 @@ struct WorktreeAuditor: Sendable {
                 steps.append("commit or discard the changes")
             }
         }
-        if let personalIgnored {
-            if personalIgnored.isEmpty {
+        // Any ignored entry keeps the worktree out of Safe. Its name proves
+        // nothing: an ignored folder is reported as one entry, and one named
+        // `build` or `.build` can hold the only copy of something.
+        if let ignoredEntries {
+            if ignoredEntries.isEmpty {
                 checks.append(SafetyCheck(
-                    id: "ignoredFiles", title: "No ignored files of your own", passed: true,
-                    detail: "Files git ignores here are build output or caches, which are made again."))
+                    id: "ignoredFiles", title: "No ignored files", passed: true,
+                    detail: "git ignores nothing in it, so git status sees every file."))
             } else {
-                let count = personalIgnored.count
-                let sample = personalIgnored.prefix(3).joined(separator: ", ") + (count > 3 ? ", …" : "")
+                let count = ignoredEntries.count
+                let sample = ignoredEntries.prefix(3).joined(separator: ", ") + (count > 3 ? ", …" : "")
                 checks.append(SafetyCheck(
-                    id: "ignoredFiles", title: "No ignored files of your own", passed: false,
-                    detail: "\(count) \(count == 1 ? "file or folder" : "files or folders") git ignores, so it doesn't count them as changes: \(sample). Removing the worktree deletes them."))
+                    id: "ignoredFiles", title: "No ignored files", passed: false,
+                    detail: "\(count) \(count == 1 ? "file or folder" : "files or folders") git ignores, which it doesn't count as changes and `git worktree remove` deletes without asking: \(sample). Midden can't tell whether they can be made again, so look before removing it."))
             }
         }
 
@@ -209,16 +212,16 @@ struct WorktreeAuditor: Sendable {
         }
 
         // An unknown date is not evidence of an idle worktree: the check fails
-        // and the verdict stays "review". So do ignored files of the user's.
+        // and the verdict stays "review". So does any ignored file.
         let idle = lastActivity.map { now.timeIntervalSince($0) >= activeWindow } ?? false
         checks.append(SafetyCheck(
             id: "lastActivity", title: "Not used lately", passed: idle,
             detail: lastActivity.map { "Last checkout or commit \(Dates.describe($0, now: now))." }
                 ?? "Couldn't tell when it was last used."))
-        let onlyGeneratedIgnored = personalIgnored?.isEmpty == true
+        let nothingIgnored = ignoredEntries?.isEmpty == true
         return WorktreeAudit(
             repositoryName: repositoryName, repository: repository, branch: branch, checks: checks,
-            safety: idle && onlyGeneratedIgnored ? .safe : .review,
+            safety: idle && nothingIgnored ? .safe : .review,
             action: .run(["git", "-C", repository, "worktree", "remove", path]),
             lastActivity: lastActivity)
     }
@@ -329,24 +332,6 @@ struct WorktreeAuditor: Sendable {
             if state.contains("R") || state.contains("C") { _ = fields.next() }
         }
         return (changed, ignored)
-    }
-
-    /// Names of ignored files and folders a tool makes again by itself:
-    /// build folders, caches, compiled Python, logs, Finder's metadata.
-    static let generatedNames: Set<String> = BuildFolderKind.names.union([
-        "dist", ".build", ".swiftpm", "DerivedData", "__pycache__", ".cache", "coverage",
-        ".nyc_output", ".eslintcache", ".DS_Store",
-    ])
-    static let generatedExtensions: Set<String> = ["pyc", "pyo", "o", "log", "tsbuildinfo"]
-
-    /// Whether an ignored path (`dir/` for a folder) is build output or a
-    /// cache. Everything else could be the only copy of something.
-    static func isGenerated(_ path: String) -> Bool {
-        if path.split(separator: "/").contains(where: { generatedNames.contains(String($0)) }) {
-            return true
-        }
-        let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
-        return generatedExtensions.contains((trimmed as NSString).pathExtension)
     }
 
     static func quoted(_ path: String) -> String {
