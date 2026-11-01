@@ -26,6 +26,8 @@ package enum Benchmark {
         package var bytes: Int64
         package var readErrors: Int
         package var seconds: Double
+        /// The report, for the `scan` stage.
+        package var report: ScanReport?
     }
 
     /// The thread count a scan uses when none is given.
@@ -36,7 +38,7 @@ package enum Benchmark {
         let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         func outcome(items: Int64, bytes: Int64, readErrors: Int) -> Outcome {
             let seconds = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e9
-            return Outcome(items: items, bytes: bytes, readErrors: readErrors, seconds: seconds)
+            return Outcome(items: items, bytes: bytes, readErrors: readErrors, seconds: seconds, report: nil)
         }
 
         switch stage {
@@ -58,8 +60,10 @@ package enum Benchmark {
             var options = ScanOptions(home: URL(fileURLWithPath: root))
             options.threadCount = threadCount
             let report = try await Scanner(options: options).scan()
-            return outcome(
+            var result = outcome(
                 items: report.itemsScanned, bytes: report.bytesScanned, readErrors: report.readErrors)
+            result.report = report
+            return result
         }
     }
 }

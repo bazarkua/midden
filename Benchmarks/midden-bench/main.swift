@@ -7,7 +7,8 @@
 //   midden-bench scan PATH        the whole scan, without JSON output
 //
 // Prints one line: items, allocated bytes, folders that couldn't be read,
-// and the seconds the stage took inside the process.
+// and the seconds the stage took inside the process. `scan` also encodes the
+// report as `midden scan --json` would and prints how long that took.
 
 import Foundation
 import MiddenCore
@@ -34,10 +35,22 @@ let root = (arguments[1] as NSString).expandingTildeInPath
 
 do {
     let outcome = try await Benchmark.run(stage, root: root, threads: threads)
-    print(
+    var line =
         "items=\(outcome.items) bytes=\(outcome.bytes) errors=\(outcome.readErrors)"
-            + " threads=\(threads ?? Benchmark.defaultThreads) stage=\(stage.rawValue)"
-            + " seconds=\(String(format: "%.3f", outcome.seconds))")
+        + " threads=\(threads ?? Benchmark.defaultThreads) stage=\(stage.rawValue)"
+        + " seconds=\(String(format: "%.3f", outcome.seconds))"
+    if let report = outcome.report {
+        // Encoded exactly as `midden scan --json` does, then thrown away,
+        // so JSON's cost is measured apart from the scan's.
+        let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let json = try encoder.encode(report)
+        let seconds = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e9
+        line += " json_seconds=\(String(format: "%.3f", seconds)) json_bytes=\(json.count)"
+    }
+    print(line)
 } catch {
     FileHandle.standardError.write(Data("midden-bench: \(error)\n".utf8))
     exit(1)
