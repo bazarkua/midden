@@ -33,8 +33,9 @@ private final class MountedDiskImage {
     }
 
     deinit {
-        // Also when the test failed or access was denied: nothing stays
-        // mounted, and a stuck detach gives up after its deadline.
+        // Attempted also when the test failed or access was denied, and
+        // given up after 30 seconds. A detach that fails is ignored here, so
+        // an image can stay attached; `hdiutil info` lists it.
         _ = try? Self.hdiutil(["detach", "-force", mountPoint, "-quiet"], timeout: 30)
     }
 
