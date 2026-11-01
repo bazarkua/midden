@@ -13,6 +13,8 @@ public struct ScanOptions: Sendable {
     var projectIdleWindow: TimeInterval = Findings.projectIdleWindow
     /// Worktrees used more recently are "review".
     var worktreeActiveWindow: TimeInterval = 7 * 86_400
+    /// Whether Full Disk Access is granted; nil asks the system.
+    var fullDiskAccess: Bool?
 
     public init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,

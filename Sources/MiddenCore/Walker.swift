@@ -64,6 +64,9 @@ struct Visit<Context: Sendable, Mark: Sendable> {
     var childContext: Context
     /// Names of subdirectories not to enter. Their size is not counted.
     var excluded: [String] = []
+    /// Names of subdirectories not to enter that count as unreadable, e.g.
+    /// privacy-protected folders without Full Disk Access.
+    var unreadable: [String] = []
 }
 
 /// A directory the delegate marked: its total and its children's sizes.
@@ -325,6 +328,10 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             if entry.kind == .directory {
                 // A different device means a mount point: another volume.
                 guard entry.device == device, !visit.excluded.contains(entry.name) else {
+                    continue
+                }
+                if visit.unreadable.contains(entry.name) {
+                    unreadable.add(1, ordering: .relaxed)
                     continue
                 }
                 children.append(Node(

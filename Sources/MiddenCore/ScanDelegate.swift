@@ -20,6 +20,8 @@ final class ScanDelegate: WalkDelegate {
         var match: FileMatch
     }
 
+    /// Skip privacy-protected folders: Full Disk Access is missing.
+    let skipProtected: Bool
     private let fileHits = Mutex<[FileHit]>([])
     private let repositories = Mutex<[String]>([])
 
@@ -27,6 +29,15 @@ final class ScanDelegate: WalkDelegate {
 
     /// `.git` folders that list linked worktrees, wherever the walk saw them.
     var gitDirectories: [String] { repositories.withLock { $0 } }
+
+    init(skipProtected: Bool = false) {
+        self.skipProtected = skipProtected
+    }
+
+    private func protectedFolders(in relative: [String]?, _ entries: [DirectoryEntry]) -> [String] {
+        guard skipProtected, let relative else { return [] }
+        return PrivacyProtected.skipped(in: relative, entries: entries)
+    }
 
     func rootContext() -> Context {
         Context(parentRelative: nil, scope: Scope(), parent: .none)
@@ -38,17 +49,19 @@ final class ScanDelegate: WalkDelegate {
             return Visit(
                 mark: nil,
                 childContext: Context(
-                    parentRelative: [], scope: Scope(), parent: ProjectFacts(entries: dir.entries)))
+                    parentRelative: [], scope: Scope(), parent: ProjectFacts(entries: dir.entries)),
+                unreadable: protectedFolders(in: [], dir.entries))
         }
         let context = dir.context
         if dir.name == ".git", dir.entries.contains(where: { $0.name == "worktrees" && $0.kind == .directory }) {
             repositories.withLock { $0.append(dir.path) }
         }
         // Inside node_modules, a cache or a .git folder: nothing to classify.
-        if context.scope.claimed {
-            return Visit(mark: nil, childContext: context)
-        }
         let relative = context.parentRelative.map { $0 + [dir.name] }
+        if context.scope.claimed {
+            return Visit(
+                mark: nil, childContext: context, unreadable: protectedFolders(in: relative, dir.entries))
+        }
         let (match, inner) = Classifier.classify(DirectoryFacts(
             path: dir.path, name: dir.name, relative: relative, scope: context.scope,
             parent: context.parent, entries: dir.entries))
@@ -61,7 +74,8 @@ final class ScanDelegate: WalkDelegate {
             parent: inner.claimed ? .none : ProjectFacts(entries: dir.entries))
         return Visit(
             mark: match, childContext: childContext,
-            excluded: Classifier.excludedChildren(of: relative))
+            excluded: Classifier.excludedChildren(of: relative),
+            unreadable: protectedFolders(in: relative, dir.entries))
     }
 
     private func recordFiles(_ entries: [DirectoryEntry], in path: String, scope: Scope) {

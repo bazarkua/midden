@@ -33,6 +33,30 @@ enum System {
     }
 }
 
+extension System {
+    /// Runs blocking work on its own thread and waits at most `seconds`.
+    /// Returns nil on timeout; the work then finishes, or stays blocked, on
+    /// its own thread.
+    static func withDeadline<T: Sendable>(
+        _ seconds: TimeInterval, _ work: @escaping @Sendable () -> T
+    ) -> T? {
+        let box = LockedBox<T>()
+        let done = DispatchSemaphore(value: 0)
+        Thread {
+            let result = work()
+            box.value.withLock { $0 = result }
+            done.signal()
+        }.start()
+        guard done.wait(timeout: .now() + seconds) == .success else { return nil }
+        return box.value.withLock { $0 }
+    }
+}
+
+/// A value shared between threads.
+final class LockedBox<T: Sendable>: Sendable {
+    let value = Mutex<T?>(nil)
+}
+
 enum Background {
     /// Runs blocking work on a new thread, keeping it off the Swift
     /// cooperative pool, whose threads must never block.

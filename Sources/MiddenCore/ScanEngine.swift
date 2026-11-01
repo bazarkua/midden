@@ -16,7 +16,12 @@ struct ScanEngine {
         } catch {
             throw MiddenError.unreadable(path: options.home.path, code: error.code.rawValue)
         }
-        let delegate = ScanDelegate()
+        // Without Full Disk Access, protected folders are skipped rather than
+        // opened: opening some of them waits on a permission prompt. The probe
+        // itself gets a deadline for the same reason.
+        let fullDiskAccess = options.fullDiskAccess
+            ?? (System.withDeadline(WalkDefaults.stallTimeout) { !System.needsFullDiskAccess(home: home) } ?? false)
+        let delegate = ScanDelegate(skipProtected: !fullDiskAccess)
         let walk: WalkResult<DirectoryMatch>
         do {
             walk = try Walker(
@@ -121,7 +126,7 @@ struct ScanEngine {
             itemsScanned: walk.items, bytesScanned: walk.totalBytes,
             disk: System.diskSpace(home), findings: findings, topFolders: topFolders,
             unreadableCount: walk.unreadable,
-            needsFullDiskAccess: System.needsFullDiskAccess(home: home))
+            needsFullDiskAccess: !fullDiskAccess)
     }
 }
 
