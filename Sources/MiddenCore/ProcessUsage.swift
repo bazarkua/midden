@@ -110,22 +110,33 @@ struct ProcessUsage: Sendable {
             buffer = [UInt8](repeating: 0, count: Int(maximum))
         }
 
-        /// argc, then the executable's path and padding, then argc
-        /// NUL-terminated arguments. Nil when they can't be read.
+        /// The process's arguments, or nil when they can't be read whole.
         func read(_ pid: Int32) -> [String]? {
             var size = buffer.count
             var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
-            guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else {
-                return nil
-            }
-            let count = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
-            var index = MemoryLayout<Int32>.size
-            while index < size, buffer[index] != 0 { index += 1 }
-            while index < size, buffer[index] == 0 { index += 1 }
+            guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+            return Self.parse(buffer, size: size)
+        }
+
+        /// argc, then the executable's path and padding, then argc
+        /// NUL-terminated arguments, in the first `size` bytes. Nil unless
+        /// all of it is there: at least one argument, the path and every
+        /// argument terminated. A cut-off record is unknown, not shorter.
+        static func parse(_ buffer: [UInt8], size: Int) -> [String]? {
+            let header = MemoryLayout<Int32>.size
+            guard size <= buffer.count, size > header else { return nil }
+            let count = Int(buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) })
+            guard count >= 1, count <= size - header else { return nil }
+            var index = header
+            while index < size, buffer[index] != 0 { index += 1 }  // The executable's path.
+            guard index < size else { return nil }
+            while index < size, buffer[index] == 0 { index += 1 }  // Padding.
             var arguments: [String] = []
-            while arguments.count < count, index < size {
+            while arguments.count < count {
+                guard index < size else { return nil }
                 let start = index
                 while index < size, buffer[index] != 0 { index += 1 }
+                guard index < size else { return nil }  // No terminator: cut off.
                 arguments.append(String(decoding: buffer[start..<index], as: UTF8.self))
                 index += 1
             }
@@ -145,7 +156,24 @@ struct ProcessUsage: Sendable {
     func using(_ path: String) -> [Process] {
         processes.filter { process in
             Self.isInside(process.directory, path) || Self.isInside(process.executable, path)
-                || process.arguments.contains { Self.mentions($0, path) }
+                || process.arguments.contains {
+                    Self.mentions($0, path) || Self.resolves($0, from: process.directory, into: path)
+                }
+        }
+    }
+
+    /// Whether an argument, read as a path relative to the process's
+    /// working directory, leads into `path`: `../cache/x.js`, or the value
+    /// of `--flag=../cache/x.js`. A flag's separate value is an argument of
+    /// its own and is read the same way. Absolute paths are `mentions`'.
+    static func resolves(_ argument: String, from directory: String, into path: String) -> Bool {
+        guard directory.hasPrefix("/") else { return false }
+        var candidates: [Substring] = []
+        if !argument.hasPrefix("-") { candidates.append(Substring(argument)) }
+        if let equals = argument.firstIndex(of: "=") { candidates.append(argument[argument.index(after: equals)...]) }
+        return candidates.contains { candidate in
+            guard !candidate.isEmpty, !candidate.hasPrefix("/") else { return false }
+            return isInside(Classifier.normalize(directory + "/" + candidate), path)
         }
     }
 

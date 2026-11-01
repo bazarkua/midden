@@ -80,7 +80,7 @@ enum Findings {
         }
         guard !users.isEmpty else {
             finding.checks.append(SafetyCheck(
-                id: "inUse", title: title, passed: true, detail: "No running program uses it."))
+                id: "inUse", title: title, passed: true, detail: "No use found in process paths or arguments."))
             return finding
         }
         let named = users.prefix(3).map { "\($0.displayName) (pid \($0.pid))" }.joined(separator: ", ")

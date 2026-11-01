@@ -111,6 +111,24 @@ func runScript(_ script: String, from directory: String) throws -> Process {
         #expect(pathExists(home.path(Self.dlxTool)))
     }
 
+    /// The same command started with a relative path from a project
+    /// folder: its executable and working directory are elsewhere, and the
+    /// script's path only resolves into dlx from that working directory.
+    @Test func aDlxCommandStartedWithARelativePathKeepsItsFolder() async throws {
+        let home = try makePnpmHome()
+        let project = try home.mkdir("code/app")
+        let process = try runScript("../../" + Self.dlxTool, from: project)
+        defer { process.terminate() }
+
+        let byPath = try await scanFindings(home)
+        let dlx = try #require(byPath[home.path(Self.pnpm + "/dlx")])
+        #expect(dlx.safety == .info)
+        #expect(dlx.checks.first?.detail.contains("pid \(process.processIdentifier)") == true, "\(dlx.checks)")
+        let result = try #require(await testCleaner(home).clean([home.path(Self.pnpm + "/dlx")]).results.first)
+        #expect(!result.ok)
+        #expect(pathExists(home.path(Self.dlxTool)))
+    }
+
     /// Without a complete process listing, nothing counts as unused.
     @Test func unknownProcessStateKeepsDlx() async throws {
         let home = try makePnpmHome()

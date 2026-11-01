@@ -51,6 +51,57 @@ import Testing
         #expect(usage.processes.map(\.pid) == [1])
     }
 
+    /// A relative path in an argument, alone or as a flag's value, means a
+    /// path from the process's working directory.
+    @Test func resolvesRelativeArgumentsFromTheWorkingDirectory() {
+        let folder = "/Users/me/Library/Caches/pnpm/dlx"
+        func process(_ arguments: [String], in directory: String = "/Users/me/code/app") -> ProcessUsage.Process {
+            ProcessUsage.Process(pid: 9, command: "node", directory: directory, executable: "/usr/bin/node", arguments: arguments)
+        }
+        let using = [
+            process(["node", "../../Library/Caches/pnpm/dlx/abc/node_modules/.bin/tool"]),
+            process(["node", "--require=../../Library/Caches/pnpm/dlx/abc/hook.js", "index.js"]),
+            process(["node", "--cache", "./x/../../../Library/Caches/pnpm/dlx"]),
+            process(["pnpm", "dlx"], in: "/Users/me/Library/Caches/pnpm"),
+        ]
+        for candidate in using {
+            #expect(!ProcessUsage(processes: [candidate]).using(folder).isEmpty, "\(candidate.arguments)")
+        }
+        let elsewhere = [
+            process(["node", "../../Library/Caches/pnpm/dlx2/x.js"]),
+            process(["node", "--require=./hook.js"]),
+            process(["node", "-e", "1+1"]),
+        ]
+        for candidate in elsewhere {
+            #expect(ProcessUsage(processes: [candidate]).using(folder).isEmpty, "\(candidate.arguments)")
+        }
+    }
+
+    /// KERN_PROCARGS2 data: argc, the executable's path, padding, then
+    /// argc NUL-terminated arguments. Anything short of that is unknown.
+    @Test func rejectsTruncatedOrInvalidArgumentRecords() {
+        func record(argc: Int32, _ body: String) -> [UInt8] {
+            withUnsafeBytes(of: argc) { Array($0) } + Array(body.utf8)
+        }
+        let valid = record(argc: 2, "/bin/sh\0\0\0sh\0script.sh\0")
+        #expect(ProcessUsage.ArgumentReader.parse(valid, size: valid.count) == ["sh", "script.sh"])
+        // The last argument isn't terminated: cut off.
+        let truncated = record(argc: 2, "/bin/sh\0\0sh\0script.s")
+        #expect(ProcessUsage.ArgumentReader.parse(truncated, size: truncated.count) == nil)
+        // Fewer arguments than argc says.
+        let short = record(argc: 3, "/bin/sh\0\0sh\0script.sh\0")
+        #expect(ProcessUsage.ArgumentReader.parse(short, size: short.count) == nil)
+        // No executable path terminator, no arguments, or a negative count.
+        let noPath = record(argc: 1, "/bin/sh")
+        #expect(ProcessUsage.ArgumentReader.parse(noPath, size: noPath.count) == nil)
+        let zero = record(argc: 0, "/bin/sh\0\0")
+        #expect(ProcessUsage.ArgumentReader.parse(zero, size: zero.count) == nil)
+        let negative = record(argc: -1, "/bin/sh\0\0sh\0")
+        #expect(ProcessUsage.ArgumentReader.parse(negative, size: negative.count) == nil)
+        // Only the bytes the kernel wrote count.
+        #expect(ProcessUsage.ArgumentReader.parse(valid, size: valid.count - 1) == nil)
+    }
+
     @Test func readsThisProcess() throws {
         let usage = ProcessUsage.current()
         let me = try #require(usage.processes.first { $0.pid == getpid() })
