@@ -122,11 +122,13 @@ struct ScanEngine {
                 findings.append(Findings.file(hit.match, path: hit.path, entry: hit.entry))
             }
         }
+        var aliases: [String: [String]] = [:]
         for hits in linked.values {
             let names = hits.sorted { $0.path < $1.path }
             findings.append(Findings.file(
                 names[0].match, path: names[0].path, entry: names[0].entry,
                 otherNames: names.dropFirst().map(\.path)))
+            aliases[names[0].path] = names.dropFirst().map(\.path)
         }
 
         if !simulatorSizes.isEmpty {
@@ -153,7 +155,8 @@ struct ScanEngine {
             unreadableCount: walk.unreadable,
             needsFullDiskAccess: !fullDiskAccess,
             spaceMap: SpaceMap.build(
-                walk.spaceRecords, root: home, findings: findings, floor: WalkDefaults.mapFloor),
+                walk.spaceRecords, root: home, findings: findings, aliases: aliases,
+                floor: WalkDefaults.mapFloor),
             skippedWithoutFullDiskAccess: walk.skipped,
             readErrors: walk.readErrors)
     }

@@ -35,6 +35,13 @@ import Testing
     #expect(report.spaceMap == nil)
 }
 
+@Test func readsSpaceNodesSavedBeforeIsOther() throws {
+    let old = Data(#"{"name": "a", "path": "/a", "bytes": 1, "isDirectory": true, "children": []}"#.utf8)
+    let node = try JSONDecoder().decode(SpaceNode.self, from: old)
+    #expect(node.isOther == false)
+    #expect(node.findingID == nil)
+}
+
 @Test func manualActionsAreNotAutomatic() {
     #expect(CleanAction.manual("Do it in Finder").isAutomatic == false)
     #expect(CleanAction.removeDirectory.isAutomatic)

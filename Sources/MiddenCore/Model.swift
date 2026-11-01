@@ -224,21 +224,25 @@ public struct FolderUsage: Codable, Sendable, Hashable {
 
 /// A file or folder in the home folder's size tree, for the space map.
 public struct SpaceNode: Codable, Sendable, Hashable {
-    /// The item's name. Merged small items are one node named
-    /// "Other (N items)", which carries its parent's path.
+    /// The item's name, or "Other (N items)" for merged small items.
     public var name: String
+    /// Unique in the tree. A merged node's is its parent's path plus
+    /// "/(other)".
     public var path: String
     /// Bytes allocated on disk, hard links counted once.
     public var bytes: Int64
     public var isDirectory: Bool
-    /// The finding this node is, or is inside of, when there is one.
+    /// Set on the finding's own node only. Findings are never merged into
+    /// "Other", and the folders leading to them are always kept.
     public var findingID: String?
     /// Largest first. When present, they add up to `bytes`.
     public var children: [SpaceNode]
+    /// Small items merged into one node.
+    public var isOther: Bool
 
     public init(
         name: String, path: String, bytes: Int64, isDirectory: Bool, findingID: String? = nil,
-        children: [SpaceNode] = []
+        children: [SpaceNode] = [], isOther: Bool = false
     ) {
         self.name = name
         self.path = path
@@ -246,6 +250,19 @@ public struct SpaceNode: Codable, Sendable, Hashable {
         self.isDirectory = isDirectory
         self.findingID = findingID
         self.children = children
+        self.isOther = isOther
+    }
+
+    /// Also reads trees saved before `isOther` existed.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        path = try container.decode(String.self, forKey: .path)
+        bytes = try container.decode(Int64.self, forKey: .bytes)
+        isDirectory = try container.decode(Bool.self, forKey: .isDirectory)
+        findingID = try container.decodeIfPresent(String.self, forKey: .findingID)
+        children = try container.decode([SpaceNode].self, forKey: .children)
+        isOther = try container.decodeIfPresent(Bool.self, forKey: .isOther) ?? false
     }
 }
 
