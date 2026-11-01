@@ -57,7 +57,7 @@ enum ContentsSurvey {
             var problems: [String] = []
             if !outcome.failures.isEmpty {
                 let name = (outcome.failures[0] as NSString).lastPathComponent
-                problems.append("couldn't delete \(outcome.failures.count) old \(outcome.failures.count == 1 ? "file" : "files"), e.g. \(name)")
+                problems.append("couldn't delete \(outcome.failures.count) old \(outcome.failures.count == 1 ? "file" : "files"), such as \(name)")
             }
             if outcome.unreadableFolders > 0 {
                 let count = outcome.unreadableFolders
@@ -77,7 +77,7 @@ enum ContentsSurvey {
                 tree.remove(entry.name, in: fd)
             }
             guard let failure = tree.failures.first else { return (nil, tree.bytes) }
-            return ("Couldn't remove \(tree.failures.count) \(tree.failures.count == 1 ? "item" : "items"), e.g. \(failure).", tree.bytes)
+            return ("Couldn't remove \(tree.failures.count) \(tree.failures.count == 1 ? "item" : "items"), such as \(failure).", tree.bytes)
         }
     }
 }

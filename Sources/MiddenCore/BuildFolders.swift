@@ -139,7 +139,7 @@ enum BuildFolderKind: Sendable, Hashable {
             """
             A Python virtual environment for “\(project)”. To recreate it you need the list of \
             packages it had: \(rebuild(markers)). Packages installed into it by hand, and files \
-            changed inside it, aren't recorded anywhere and are lost; scripts that run with its \
+            changed inside it, aren't recorded anywhere and are lost. Scripts that run with its \
             Python stop working until you recreate it.
             """
         case .pods:

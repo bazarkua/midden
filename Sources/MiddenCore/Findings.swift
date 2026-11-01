@@ -41,7 +41,7 @@ enum Findings {
             safety = .info
             explanation += """
                  Parts of this folder are listed separately, so Midden never deletes it as a \
-                whole; this item is what's left.
+                whole. This item is what's left.
                 """
             action = .manual("Clean the parts Midden lists separately, or remove the rest by hand in Finder.")
         }

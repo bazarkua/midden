@@ -421,7 +421,7 @@ enum RuleCatalog {
             explanation: """
                 An old version of an extension that VS Code replaced or uninstalled and marked \
                 for removal in its .obsolete list. VS Code deletes it itself the next time it \
-                starts; Midden can delete it now. Quit VS Code first.
+                starts, and Midden can delete it now. Quit VS Code first.
                 """,
             action: .removeDirectory,
             app: .fixed(AppHint(name: "Visual Studio Code", bundleID: "com.microsoft.VSCode")),
@@ -722,7 +722,7 @@ enum RuleCatalog {
                 the virtual environments of your Poetry projects. Each is listed separately, so \
                 Midden never deletes this folder as a whole.
                 """,
-            action: .manual("Clean the parts listed separately; `poetry cache clear` and `poetry env remove` do the same from Poetry.")),
+            action: .manual("Clean the parts listed separately, or use `poetry cache clear` and `poetry env remove`.")),
         Rule(
             paths: ["Library/Caches/pypoetry/cache", "Library/Caches/pypoetry/artifacts"],
             category: .packageCaches, safety: .safe,
@@ -779,7 +779,7 @@ enum RuleCatalog {
             title: "Yarn cache", group: "Yarn",
             explanation: """
                 Packages Yarn 1 downloaded. Yarn downloads them again when a project installs \
-                them; `yarn cache clean` deletes the same files.
+                them. `yarn cache clean` deletes the same files.
                 """,
             action: .removeDirectory),
         // Go: `go help cache` puts the build cache in go-build inside the
@@ -791,7 +791,7 @@ enum RuleCatalog {
             title: "Go build cache", group: "Go",
             explanation: """
                 Go's build and test cache. Go rebuilds what it needs, so the next builds and \
-                tests take longer; `go clean -cache` deletes the same files.
+                tests take longer. `go clean -cache` deletes the same files.
                 """,
             action: .removeDirectory),
         // CocoaPods: cache_root defaults to ~/Library/Caches/CocoaPods
@@ -802,7 +802,7 @@ enum RuleCatalog {
             title: "CocoaPods cache", group: "CocoaPods",
             explanation: """
                 Pods and specs CocoaPods downloaded. `pod install` downloads them again when a \
-                project needs them; `pod cache clean --all` deletes the same files.
+                project needs them. `pod cache clean --all` deletes the same files.
                 """,
             action: .removeDirectory),
         // Chromium browsers: GetUserCacheDirectory (chrome_paths_mac.mm)
@@ -902,7 +902,7 @@ enum RuleCatalog {
                 Log files and crash reports apps wrote more than 7 days ago. Midden deletes only \
                 those files and keeps every folder, because macOS doesn't recreate some of them, \
                 such as DiagnosticReports for crash reports. Newer files stay, so a recent crash \
-                report is still there to send; you lose only older history.
+                report is still there to send. You lose only older history.
                 """,
             action: .removeContents,
             contents: .agedFiles(minimumAge: 7 * 86_400)),
@@ -979,7 +979,7 @@ enum RuleCatalog {
             title: "{app} web cache ({name})", group: "{app}",
             explanation: """
                 Files {app} keeps to load faster: web content it downloaded, compiled scripts \
-                and graphics. {app} rebuilds them as needed; your sign-ins and data in {app} \
+                and graphics. {app} rebuilds them as needed. Your sign-ins and data in {app} \
                 are kept elsewhere and stay. Quit {app} first.
                 """,
             action: .removeContents,
