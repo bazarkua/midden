@@ -34,6 +34,9 @@ struct Rule: Sendable {
     /// What the folder itself must show for the rule to apply; when it
     /// doesn't, the next matching rule does.
     var requires: Requirement? = nil
+    /// Its subfolders are versions of one thing (DeviceSupport's OS
+    /// versions): their parent's facts say which is newest.
+    var versionedChildren = false
 
     enum Requirement: Sendable {
         /// A Chromium profile folder: a `Local State` file, or the `mcp-`
@@ -44,6 +47,9 @@ struct Rule: Sendable {
         /// The folder holding it is a Chromium or Electron user data
         /// folder: a Preferences file and Chromium's network state files.
         case chromiumUserData
+        /// Among the newest of its siblings' versions, or the newest can't
+        /// be told (see `DeviceSupportVersions`).
+        case newestVersion
     }
 }
 
@@ -77,21 +83,43 @@ enum RuleCatalog {
                 """,
             action: .removeContents,
             app: .fixed(AppHint(name: "Xcode", bundleID: "com.apple.dt.Xcode"))),
+        // One folder per OS version Xcode copied symbols from. The newest
+        // per platform is most likely the device in use now, so it stays
+        // Review; the folder holding them can't remove every version.
         Rule(
-            paths: [
-                "Library/Developer/Xcode/iOS DeviceSupport",
-                "Library/Developer/Xcode/watchOS DeviceSupport",
-                "Library/Developer/Xcode/tvOS DeviceSupport",
-                "Library/Developer/Xcode/visionOS DeviceSupport",
-            ],
-            category: .developerTools, safety: .safe,
+            paths: deviceSupport,
+            category: .developerTools, safety: .info,
             title: "{name}", group: "Xcode",
             explanation: """
                 Debug symbols Xcode copied from devices you connected for debugging, one folder \
-                per OS version. Xcode copies them again the next time you debug on a device with \
-                that OS version, which takes a while.
+                per OS version, each listed separately. The newest version is kept for review, \
+                so Midden never deletes this folder as a whole.
                 """,
-            action: .removeContents,
+            action: .manual("Clean the versions listed separately, or delete them in Finder."),
+            app: .fixed(AppHint(name: "Xcode", bundleID: "com.apple.dt.Xcode")),
+            versionedChildren: true),
+        Rule(
+            paths: deviceSupport.map { $0 + "/*" },
+            category: .developerTools, safety: .review,
+            title: "Debug symbols for {name}", group: "Xcode",
+            explanation: """
+                Debug symbols Xcode copied from a device running this OS version, the newest \
+                here, so most likely the device you use now. Xcode copies them again the next \
+                time you debug on it, which takes a while.
+                """,
+            action: .removeDirectory,
+            app: .fixed(AppHint(name: "Xcode", bundleID: "com.apple.dt.Xcode")),
+            requires: .newestVersion),
+        Rule(
+            paths: deviceSupport.map { $0 + "/*" },
+            category: .developerTools, safety: .safe,
+            title: "Debug symbols for {name}", group: "Xcode",
+            explanation: """
+                Debug symbols Xcode copied from a device running this OS version, older than \
+                the newest one here. Xcode copies them again if you debug on a device with this \
+                version, which takes a while.
+                """,
+            action: .removeDirectory,
             app: .fixed(AppHint(name: "Xcode", bundleID: "com.apple.dt.Xcode"))),
         Rule(
             paths: ["Library/Developer/Xcode/Archives"],
@@ -879,6 +907,10 @@ enum RuleCatalog {
             action: .manual("See your models with `ollama list` and remove the ones you don't use with `ollama rm <model>`.")),
     ]
 
+    static let deviceSupport = ["iOS", "watchOS", "tvOS", "visionOS"].map {
+        "Library/Developer/Xcode/\($0) DeviceSupport"
+    }
+
     /// The Chromium caches in a known Electron app's user data folder.
     private static func electronCaches(_ folder: String, _ app: AppHint, codeCache: Bool = false) -> Rule {
         let names = ["Cache", "Code Cache", "GPUCache"] + (codeCache ? ["CachedData"] : [])
@@ -970,6 +1002,8 @@ enum RuleCatalog {
             folder.entries.contains { $0.name.hasSuffix(".incomplete") }
         case .chromiumUserData:
             folder.parent.markers.isSuperset(of: [.chromiumPreferences, .chromiumNetworkState])
+        case .newestVersion:
+            folder.parent.newestVersions?.contains(folder.name) ?? true
         }
     }
 

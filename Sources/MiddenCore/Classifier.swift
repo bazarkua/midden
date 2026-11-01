@@ -46,12 +46,23 @@ struct ProjectFacts: Sendable, Hashable {
     /// Newest modification time among the entries, ignoring build folders
     /// and Finder's .DS_Store. Seconds since 1970.
     var lastChange: Double?
+    /// For a folder of versions (DeviceSupport): the subfolders that are
+    /// the newest, or all of them when that can't be told. Nil elsewhere.
+    var newestVersions: Set<String>?
 
     static let none = ProjectFacts()
 
     init(markers: Markers = [], lastChange: Double? = nil) {
         self.markers = markers
         self.lastChange = lastChange
+    }
+
+    /// Facts for the subfolders of a folder classified as `match`.
+    init(entries: [DirectoryEntry], of match: DirectoryMatch?) {
+        self.init(entries: entries)
+        if case .rule(let rule)? = match, rule.rule.versionedChildren {
+            newestVersions = DeviceSupportVersions.keepForReview(entries)
+        }
     }
 
     init(entries: [DirectoryEntry]) {
@@ -317,7 +328,7 @@ extension Classifier {
             if inner.claimed && !scope.claimed { return .inside(ancestor: path, match) }
             if case .rule(let rule)? = match, rule.isContainer { container = (path, .rule(rule)) }
             scope = inner
-            facts = ProjectFacts(entries: childEntries)
+            facts = ProjectFacts(entries: childEntries, of: match)
             entries = childEntries
         }
         return .missing

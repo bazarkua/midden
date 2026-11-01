@@ -13,8 +13,11 @@ import Testing
 
     static let cases: [Case] = [
         Case(path: "Library/Developer/Xcode/DerivedData", title: "Xcode DerivedData", safety: .safe),
-        Case(path: "Library/Developer/Xcode/iOS DeviceSupport", title: "{name}", safety: .safe),
-        Case(path: "Library/Developer/Xcode/visionOS DeviceSupport", title: "{name}", safety: .safe),
+        Case(path: "Library/Developer/Xcode/iOS DeviceSupport", title: "{name}", safety: .info),
+        Case(path: "Library/Developer/Xcode/visionOS DeviceSupport", title: "{name}", safety: .info),
+        // Without its siblings' versions, a version folder is the fallback.
+        Case(path: "Library/Developer/Xcode/iOS DeviceSupport/17.0 (21A329)", title: "Debug symbols for {name}",
+             safety: .safe),
         Case(path: "Library/Developer/Xcode/Archives", title: "Xcode archives", safety: .review),
         Case(path: "Library/Developer/CoreSimulator/Devices", title: "Simulators", safety: .info),
         Case(path: "Library/Containers/com.docker.docker", title: "Docker Desktop data", safety: .info),

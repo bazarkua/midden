@@ -140,7 +140,7 @@ final class ScanDelegate: WalkDelegate {
         let childContext = Context(
             parentRelative: relative.flatMap { $0.count < RuleCatalog.maxDepth ? $0 : nil },
             scope: inner,
-            parent: inner.claimed ? .none : ProjectFacts(entries: dir.entries))
+            parent: inner.claimed ? .none : ProjectFacts(entries: dir.entries, of: match))
         return Visit(
             mark: match, childContext: childContext,
             excluded: Classifier.excludedChildren(of: relative),
