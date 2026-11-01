@@ -11,8 +11,8 @@
 //                                 it measures what encoding adds
 //
 // Prints one line: items, allocated bytes, folders that couldn't be read,
-// and the seconds the stage took inside the process (scan-json adds the
-// encoding's seconds and size). Exits with 1 when any folder couldn't be
+// and the seconds the stage took inside the process. scan and scan-json add
+// the number of findings, scan-json the encoding's seconds and size. Exits with 1 when any folder couldn't be
 // fully read, so a partial walk isn't taken for the same work.
 
 import Foundation
@@ -45,6 +45,9 @@ do {
         "items=\(outcome.items) bytes=\(outcome.bytes) errors=\(outcome.readErrors)"
         + " threads=\(threads ?? Benchmark.defaultThreads) stage=\(arguments[0])"
         + " seconds=\(String(format: "%.3f", outcome.seconds))"
+    if let report = outcome.report {
+        line += " findings=\(report.findings.count)"
+    }
     if encodes, let report = outcome.report {
         let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         let encoder = JSONEncoder()
