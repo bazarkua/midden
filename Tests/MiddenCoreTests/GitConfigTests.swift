@@ -105,6 +105,59 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
         }
     }
 
+    /// A tracked file marked assume-unchanged or skip-worktree can be
+    /// edited without `git status` showing it, and `git worktree remove`
+    /// then deletes the edit. Midden can't verify such files without
+    /// changing the user's index, so it doesn't remove the worktree.
+    @Test(arguments: ["--assume-unchanged", "--skip-worktree"])
+    func changesHiddenByIndexFlagsBlockRemoval(flag: String) async throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        try sh(["git", "-C", worktree, "update-index", flag, "README.md"])
+        try home.write("worktrees/feature/README.md", text: "edited, and only here\n")
+        // What the flag does: status sees nothing.
+        let status = Command.run(
+            ["git", "-C", worktree, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            environment: Command.quietGit)
+        #expect(status.succeeded && status.output.isEmpty)
+
+        let audit = try auditWorktree(home, worktree)
+        #expect(audit.safety == .info, "\(flag)")
+        #expect(!audit.action.isAutomatic)
+        let check = try #require(audit.checks.first { $0.id == "hiddenChanges" })
+        #expect(!check.passed)
+        #expect(check.detail.contains("README.md"), "\(check.detail)")
+
+        let result = await Cleaner(home: home.url).clean([worktree]).results[0]
+        #expect(!result.ok)
+        #expect(try String(contentsOfFile: home.path("worktrees/feature/README.md"), encoding: .utf8)
+            == "edited, and only here\n")
+        // The user's index is left as it was.
+        let flagged = try sh(["git", "-C", worktree, "ls-files", "-v", "README.md"])
+        #expect(flagged.hasPrefix(flag == "--assume-unchanged" ? "h " : "S "), "\(flagged)")
+    }
+
+    /// A sparse checkout marks the files it leaves out skip-worktree; they
+    /// aren't on disk, so there's nothing to lose and nothing to block.
+    @Test func sparseCheckoutAbsencesDontBlockRemoval() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try home.write("repo/kept/a.txt", text: "a\n")
+        try home.write("repo/left-out/b.txt", text: "b\n")
+        try sh(["git", "-C", repository, "add", "."])
+        try sh(["git", "-C", repository, "commit", "-q", "-m", "Two folders"])
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        try sh(["git", "-C", worktree, "sparse-checkout", "set", "kept"])
+        let flagged = try sh(["git", "-C", worktree, "ls-files", "-v", "left-out/b.txt"])
+        #expect(flagged.hasPrefix("S "), "\(flagged)")
+        #expect(!FileManager.default.fileExists(atPath: home.path("worktrees/feature/left-out/b.txt")))
+
+        let audit = try auditWorktree(home, worktree)
+        #expect(audit.checks.first { $0.id == "hiddenChanges" }?.passed == true, "\(audit.checks)")
+        #expect(audit.safety == .safe, "\(audit.checks)")
+    }
+
     /// Why the check above exists: `git worktree remove`, without --force,
     /// deletes a worktree whose only extra file is an ignored .env.
     @Test func gitRemovesIgnoredFilesWithoutAsking() throws {

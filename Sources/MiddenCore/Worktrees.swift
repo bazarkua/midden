@@ -150,6 +150,35 @@ struct WorktreeAuditor: Sendable {
             }
         }
 
+        // Tracked files marked assume-unchanged or skip-worktree: git status
+        // doesn't compare them, so an edit to one is invisible to it and to
+        // `git worktree remove`. Midden can't check them without changing
+        // the user's index, so it doesn't remove the worktree. Skip-worktree
+        // files that aren't on disk are a sparse checkout's, and fine.
+        let listed = run("ls-files", "-v", "-z")
+        if !listed.succeeded {
+            checks.append(SafetyCheck(
+                id: "hiddenChanges", title: "No changes hidden from git", passed: false,
+                detail: listed.message))
+            steps.append("check it with `git -C \(Self.quoted(path)) ls-files -v`")
+        } else {
+            let hidden = Self.hiddenFromStatus(lsFilesVZ: listed.output) { relative in
+                var info = stat()
+                return lstat(path + "/" + relative, &info) == 0
+            }
+            if hidden.isEmpty {
+                checks.append(SafetyCheck(
+                    id: "hiddenChanges", title: "No changes hidden from git", passed: true,
+                    detail: "No file present here is marked assume-unchanged or skip-worktree."))
+            } else {
+                let sample = hidden.prefix(3).joined(separator: ", ") + (hidden.count > 3 ? ", …" : "")
+                checks.append(SafetyCheck(
+                    id: "hiddenChanges", title: "No changes hidden from git", passed: false,
+                    detail: "\(hidden.count) \(hidden.count == 1 ? "file is" : "files are") marked assume-unchanged or skip-worktree, so git status doesn't check \(hidden.count == 1 ? "it" : "them") for changes: \(sample)"))
+                steps.append("check those files, and clear the flags with `git update-index --no-assume-unchanged` or `--no-skip-worktree` if they're no longer needed")
+            }
+        }
+
         let refs = run(
             "for-each-ref", "--count=1", "--contains", "HEAD", "--format=%(refname:short)",
             "refs/heads", "refs/remotes")
@@ -332,6 +361,20 @@ struct WorktreeAuditor: Sendable {
             if state.contains("R") || state.contains("C") { _ = fields.next() }
         }
         return (changed, ignored)
+    }
+
+    /// Paths in `git ls-files -v -z` output whose changes git status can't
+    /// see. Each entry is `<tag> <path>`: a lowercase tag means
+    /// assume-unchanged, `S` skip-worktree. A skip-worktree file counts only
+    /// when `exists` finds it on disk; a sparse checkout leaves it absent.
+    static func hiddenFromStatus(lsFilesVZ output: String, exists: (String) -> Bool) -> [String] {
+        output.split(separator: "\0", omittingEmptySubsequences: true).compactMap { field in
+            guard field.count > 2, let tag = field.first else { return nil }
+            let path = String(field.dropFirst(2))
+            if tag.isLowercase { return path }
+            if tag == "S" { return exists(path) ? path : nil }
+            return nil
+        }
     }
 
     static func quoted(_ path: String) -> String {

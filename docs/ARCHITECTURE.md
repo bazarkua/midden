@@ -89,12 +89,13 @@ Large files, Downloads and iPhone backups are always Info. Midden has no way to 
 
 ### Worktrees: proof before a verdict
 
-A linked worktree is a directory whose `.git` is a file pointing into `<repo>/.git/worktrees/`. Midden runs six checks and shows each one to the user:
+A linked worktree is a directory whose `.git` is a file pointing into `<repo>/.git/worktrees/`. Midden runs seven checks and shows each one to the user:
 
 | Check | How | Why it matters |
 |---|---|---|
 | No uncommitted or untracked files | `git status --porcelain=v1 -z --untracked-files=all --ignore-submodules=none` with `GIT_OPTIONAL_LOCKS=0` | Removing it would lose that work. The env var keeps a read-only scan from rewriting git's index. Every option is explicit, so a user's `status.showUntrackedFiles=no` can't hide files. |
 | No ignored files | the same call with `--ignored=matching` | `git worktree remove` deletes ignored files without asking, and a name proves nothing about them: an ignored folder is reported as one entry, and one named `build` or `.build` can hold a dependency checkout with local edits. Any ignored entry makes the worktree Review. |
+| No changes hidden from git | `git ls-files -v -z` | A tracked file marked assume-unchanged or skip-worktree can be edited without `git status` showing it, and `git worktree remove` deletes the edit. Midden can't check such files without changing the user's index, so it doesn't remove the worktree. Skip-worktree files absent from disk (a sparse checkout) are fine. |
 | HEAD is on a branch | `git for-each-ref --contains HEAD` | Branches survive worktree removal. A detached commit on no branch would not. |
 | Not locked | `<gitdir>/locked` | Someone asked git to keep it. |
 | Not in use | one in-process listing of the user's processes and their working directories (`sysctl` and `proc_pidinfo`) per scan | A running shell, dev server or agent has its working directory inside. |
