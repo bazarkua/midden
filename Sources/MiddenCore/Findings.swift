@@ -125,13 +125,13 @@ enum Findings {
     private static func installerExplanation(_ ext: String) -> String {
         switch ext {
         case "dmg":
-            "A disk image, usually an app installer. Once the app is installed you don't need it; you can download it again from where you got it."
+            "A disk image, usually an app installer. Once the app is installed you don't need it, and you can usually download it again from where you got it."
         case "pkg":
-            "An installer package. Once it's installed you don't need it; you can download it again from where you got it."
+            "An installer package. Once it's installed you don't need it, and you can usually download it again from where you got it."
         case "iso":
             "A disk image, often an operating system installer. Check that no virtual machine still uses it before deleting it."
         case "ipsw":
-            "A software image for restoring or updating an iPhone, iPad or Mac. You can download it again if you need it."
+            "A software image for restoring or updating an iPhone, iPad or Mac. Finder downloads a current one when it needs it."
         case "xip":
             "A signed archive, usually an Xcode download. Once it's expanded you don't need it."
         default:
