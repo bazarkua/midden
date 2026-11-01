@@ -243,6 +243,7 @@ enum Command {
         var status: Int32 = 0
         var reaped = false
         var statusUnknown = false
+        var notOurs = false
         var leftBehind = false
         while true {
             let result = waitpid(pid, &status, WNOHANG)
@@ -253,7 +254,12 @@ enum Command {
             // Interrupted: try again, but only after the deadline and grace
             // checks below, which hold on every turn.
             if result < 0, errno != EINTR {
-                statusUnknown = true  // Not our child any more.
+                statusUnknown = true
+                // Only ECHILD says it isn't our child any more. Any other
+                // error leaves it ours, maybe still running: stop it, and
+                // let the watch reap it below.
+                notOurs = errno == ECHILD
+                if !notOurs, !killed { stop() }
                 break
             }
             let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
@@ -265,12 +271,14 @@ enum Command {
             }
             usleep(5_000)
         }
-        if leftBehind {
-            // The slot goes with it, without a gap, until it's reaped.
-            children.handOver(pid)
-        } else {
+        if reaped || notOurs {
             // Reaped here, or no longer our child: either way it's gone.
             children.release()
+        } else {
+            // Still there after being stopped, or its status couldn't be
+            // read: the slot goes with it, without a gap, until the watch
+            // has reaped it.
+            children.handOver(pid)
         }
         // WIFEXITED / WEXITSTATUS, which Swift doesn't import. An unknown
         // status is a failure, never a success.

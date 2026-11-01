@@ -215,6 +215,50 @@ private func concurrently(_ count: Int, _ body: @escaping @Sendable (Int) -> Voi
         #expect(FileManager.default.fileExists(atPath: marker))
     }
 
+    /// waitpid fails with something other than ECHILD while the child is
+    /// alive: the status is unknown, but the child is still ours, so the
+    /// command fails, the child is stopped, and its slot stays taken until
+    /// the watch has reaped it.
+    @Test func aWaitErrorOtherThanECHILDKeepsTheSlot() throws {
+        let pending = Mutex<(pid: pid_t, reaped: (@Sendable () -> Void)?)>((0, nil))
+        let children = CommandChildren(limit: 1) { pid, reaped in
+            pending.withLock { $0 = (pid, reaped) }
+        }
+        let failing: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { _, _, _ in
+            errno = EIO
+            return -1
+        }
+        let result = Command.run(
+            ["/bin/sleep", "30"], environment: [:], timeout: 1, children: children, waitpid: failing)
+        #expect(!result.succeeded)
+        #expect(result.error.contains("exit status"), "\(result.error)")
+        #expect(children.held == 1)
+        #expect(children.lingering == 1)
+
+        let (pid, reaped) = pending.withLock { $0 }
+        try #require(pid > 0)
+        var status: Int32 = 0
+        #expect(Darwin.waitpid(pid, &status, 0) == pid)  // Stopped, so it exits.
+        let report = try #require(reaped)
+        report()
+        #expect(children.held == 0)
+    }
+
+    /// ECHILD says the process isn't this one's child any more: the slot
+    /// is released at once.
+    @Test func ECHILDReleasesTheSlot() {
+        let children = CommandChildren(limit: 1)
+        let notOurs: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { _, _, _ in
+            errno = ECHILD
+            return -1
+        }
+        let result = Command.run(
+            ["/usr/bin/true"], environment: [:], timeout: 10, children: children, waitpid: notOurs)
+        #expect(!result.succeeded)
+        #expect(children.held == 0)
+        #expect(children.lingering == 0)
+    }
+
     /// The default watch reaps a lingering child as soon as it exits,
     /// without another command running, and leaves no zombie.
     @Test func theDefaultWatchReapsALingeringChild() throws {
