@@ -1,3 +1,3 @@
-import MiddenCore
+import Foundation
 
-print("midden: not implemented yet")
+exit(await CLI.run(Array(CommandLine.arguments.dropFirst())))
