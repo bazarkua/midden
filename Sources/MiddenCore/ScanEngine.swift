@@ -101,7 +101,10 @@ struct ScanEngine {
             var children = remainder?.children ?? directory.children
             // A finding that deletes only some of its contents shows only
             // those.
-            if case .rule(let rule) = match, let policy = rule.rule.contents {
+            var policy: ContentsPolicy?
+            if case .rule(let rule) = match { policy = rule.rule.contents }
+            if case .buildFolder(let build) = match { policy = build.kind.contents }
+            if let policy {
                 let survey = ContentsSurvey.measure(policy, directory.path, now: now)
                 total = survey.bytes
                 children = survey.children
@@ -118,6 +121,7 @@ struct ScanEngine {
                 if rule.rule.checkInUse { inUseChecks.append(findings.count) }
                 findings.append(Findings.rule(rule, path: directory.path, bytes: total, breakdown: breakdown))
             case .buildFolder(let build):
+                if build.kind.checkInUse { inUseChecks.append(findings.count) }
                 findings.append(Findings.buildFolder(
                     build, path: directory.path, bytes: total, breakdown: breakdown, now: now,
                     idleWindow: options.projectIdleWindow))

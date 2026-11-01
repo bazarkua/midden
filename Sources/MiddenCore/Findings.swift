@@ -113,7 +113,8 @@ enum Findings {
             group: project, bytes: bytes,
             safety: idle && !match.kind.alwaysReview ? .safe : .review,
             explanation: match.kind.explanation(project: project, markers: match.markers),
-            checks: checks, action: .removeDirectory, lastActivity: lastChange,
+            checks: checks, action: match.kind.contents == nil ? .removeDirectory : .removeContents,
+            lastActivity: lastChange,
             breakdown: breakdown)
     }
 

@@ -16,12 +16,15 @@ enum BuildFolderKind: Sendable, Hashable {
     case flutterBuild
     /// Cache of a Python tool, e.g. mypy for `.mypy_cache`.
     case pythonToolCache(tool: String)
+    /// A SwiftPM package's scratch folder, cleaned the way `swift package
+    /// clean` cleans it.
+    case swiftPMBuild
 
     /// Every name that can be a build folder. A project's last change ignores
     /// these, so a fresh `npm install` doesn't make an old project look active.
     static let names: Set<String> = [
         "node_modules", ".next", ".nuxt", ".svelte-kit", ".turbo", ".parcel-cache", ".angular",
-        "target", ".venv", "venv", "Pods", ".gradle", "build", ".dart_tool",
+        "target", ".venv", "venv", "Pods", ".gradle", "build", ".dart_tool", ".build",
         ".mypy_cache", ".pytest_cache", ".ruff_cache",
     ]
 
@@ -76,6 +79,8 @@ enum BuildFolderKind: Sendable, Hashable {
             return markers.contains(.pubspec) ? .dartTool : nil
         case ".mypy_cache", ".pytest_cache", ".ruff_cache":
             return .pythonToolCache(tool: pythonTools[name]!)
+        case ".build":
+            return markers.contains(.swiftPackage) ? .swiftPMBuild : nil
         default:
             if let path, isPythonEnvironment(path: path, entries: entries) { return .pythonEnvironment }
             return nil
@@ -103,6 +108,22 @@ enum BuildFolderKind: Sendable, Hashable {
     /// environments need to know which packages were installed.
     var alwaysReview: Bool {
         self == .pythonEnvironment
+    }
+
+    /// What `swift package clean` keeps in .build: the repository cache,
+    /// dependency checkouts, binary artifacts and the workspace state
+    /// (Workspace.clean in swift-package-manager's Workspace.swift).
+    static let swiftPMKept: Set<String> = ["repositories", "checkouts", "artifacts", "workspace-state.json"]
+
+    /// Which contents go, when not the whole folder.
+    var contents: ContentsPolicy? {
+        self == .swiftPMBuild ? .allExcept(Self.swiftPMKept) : nil
+    }
+
+    /// Whether a running program can depend on it: a build, or a program
+    /// it built running from it.
+    var checkInUse: Bool {
+        self == .swiftPMBuild
     }
 
     /// What the folder is, for a project named `project`.
@@ -133,6 +154,13 @@ enum BuildFolderKind: Sendable, Hashable {
             "Flutter build output for “\(project)”. The next `flutter build` or `flutter run` recreates it."
         case .pythonToolCache(let tool):
             "\(tool)'s cache for “\(project)”. \(tool) recreates it on its next run."
+        case .swiftPMBuild:
+            """
+            Swift Package Manager's build products for “\(project)”: what `swift package clean` \
+            deletes. Midden keeps what that command keeps: dependency checkouts, which you may \
+            have edited, cached repositories, binary artifacts and the workspace state. The next \
+            `swift build` builds the rest again, which takes a while.
+            """
         }
     }
 
@@ -157,6 +185,7 @@ enum BuildFolderKind: Sendable, Hashable {
         case .flutterBuild: return "`flutter build`"
         case .javaScriptBuild: return "the next build"
         case .pythonToolCache(let tool): return "the next \(tool) run"
+        case .swiftPMBuild: return "`swift build`"
         }
     }
 }

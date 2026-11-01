@@ -9,6 +9,9 @@ enum ContentsPolicy: Sendable, Hashable {
     /// folder stays, with its identity, permissions and ACLs: macOS can't
     /// recreate some of them, such as Logs/DiagnosticReports.
     case agedFiles(minimumAge: TimeInterval)
+    /// Everything directly inside except these names, as an owner's own
+    /// clean command does (SwiftPM's `swift package clean`).
+    case allExcept(Set<String>)
 }
 
 /// Measures and applies a contents policy, for the scanner and the cleaner.
@@ -22,6 +25,20 @@ enum ContentsSurvey {
         case .agedFiles(let minimumAge):
             guard let survey = AgedFiles(minimumAge: minimumAge, now: now).survey(path) else { return (0, []) }
             return (survey.bytes, survey.byChild.map { .init(name: $0.key, bytes: $0.value, isDirectory: true) })
+        case .allExcept(let kept):
+            guard let entries = try? DirectoryReader().entries(atPath: path) else { return (0, []) }
+            var children: [SizedDirectory<DirectoryMatch>.Child] = []
+            for entry in entries where !kept.contains(entry.name) {
+                var bytes = entry.allocatedSize
+                if entry.kind == .directory {
+                    bytes = (try? Walker(root: path + "/" + entry.name, delegate: SizeOnly()).run().totalBytes) ?? bytes
+                } else if entry.kind == .symlink {
+                    var info = stat()
+                    bytes = lstat(path + "/" + entry.name, &info) == 0 ? Int64(info.st_blocks) * 512 : 0
+                }
+                children.append(.init(name: entry.name, bytes: bytes, isDirectory: entry.kind == .directory))
+            }
+            return (children.reduce(0) { $0 + $1.bytes }, children)
         }
     }
 
@@ -49,6 +66,76 @@ enum ContentsSurvey {
             guard !problems.isEmpty else { return (nil, outcome.bytes) }
             let deleted = "Deleted \(outcome.files) old \(outcome.files == 1 ? "file" : "files")"
             return (deleted + ", but " + problems.joined(separator: " and ") + ".", outcome.bytes)
+        case .allExcept(let kept):
+            guard let fd = AgedFiles.openBeneath(home, path) else { return ("Midden couldn't open the folder.", 0) }
+            defer { close(fd) }
+            var tree = TreeRemoval()
+            guard let entries = try? DirectoryReader().entries(directory: fd) else {
+                return ("Midden couldn't read the folder.", 0)
+            }
+            for entry in entries where !kept.contains(entry.name) {
+                tree.remove(entry.name, in: fd)
+            }
+            guard let failure = tree.failures.first else { return (nil, tree.bytes) }
+            return ("Couldn't remove \(tree.failures.count) \(tree.failures.count == 1 ? "item" : "items"), e.g. \(failure).", tree.bytes)
+        }
+    }
+}
+
+/// Removes a file or a folder with everything in it through descriptors:
+/// each folder is opened relative to its parent with O_NOFOLLOW, a symlink
+/// is removed itself and never followed, and nothing on another device (a
+/// disk mounted inside) is entered, so removing the folder holding it fails
+/// instead.
+struct TreeRemoval {
+    /// Bytes freed: allocated blocks of what was removed, files with other
+    /// names left uncounted.
+    var bytes: Int64 = 0
+    /// Names that couldn't be removed.
+    var failures: [String] = []
+    private let reader = DirectoryReader()
+
+    mutating func remove(_ name: String, in parent: Int32) {
+        var info = stat()
+        guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
+            if errno != ENOENT { failures.append(name) }
+            return
+        }
+        if info.st_mode & S_IFMT == S_IFDIR {
+            var parentInfo = stat()
+            guard fstat(parent, &parentInfo) == 0, parentInfo.st_dev == info.st_dev else {
+                failures.append(name)
+                return
+            }
+            var fd: Int32
+            repeat { fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) } while fd < 0 && errno == EINTR
+            guard fd >= 0 else {
+                failures.append(name)
+                return
+            }
+            var opened = stat()
+            guard fstat(fd, &opened) == 0, opened.st_ino == info.st_ino, opened.st_dev == info.st_dev,
+                let entries = try? reader.entries(directory: fd)
+            else {
+                close(fd)
+                failures.append(name)
+                return
+            }
+            let before = failures.count
+            for entry in entries { remove(entry.name, in: fd) }
+            close(fd)
+            if failures.count > before { return }
+            guard unlinkat(parent, name, AT_REMOVEDIR) == 0 else {
+                failures.append(name)
+                return
+            }
+            bytes += Int64(info.st_blocks) * 512
+        } else {
+            guard unlinkat(parent, name, 0) == 0 else {
+                if errno != ENOENT { failures.append(name) }
+                return
+            }
+            if info.st_nlink <= 1 { bytes += Int64(info.st_blocks) * 512 }
         }
     }
 }

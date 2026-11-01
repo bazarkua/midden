@@ -40,6 +40,7 @@ struct ProjectFacts: Sendable, Hashable {
         /// Persistent State` or `TransportSecurity`.
         static let chromiumPreferences = Markers(rawValue: 1 << 10)
         static let chromiumNetworkState = Markers(rawValue: 1 << 11)
+        static let swiftPackage = Markers(rawValue: 1 << 12)
     }
 
     var markers: Markers = []
@@ -80,6 +81,7 @@ struct ProjectFacts: Sendable, Hashable {
             case "yarn.lock": markers.insert(.yarnLock)
             case "bun.lockb", "bun.lock": markers.insert(.bunLock)
             case "uv.lock": markers.insert(.uvLock)
+            case "Package.swift": markers.insert(.swiftPackage)
             case "requirements.txt", "pyproject.toml", "Pipfile", "setup.py":
                 markers.insert(.pythonRequirements)
             case "Preferences" where entry.kind == .file:

@@ -220,7 +220,15 @@ struct CleanEngine {
                 if rule.rule.checkInUse { finding = Findings.checkingUse(finding, processUsage()) }
                 return .success((finding, rule.rule.contents))
             case .buildFolder(let build):
-                return .success((Findings.buildFolder(build, path: path, bytes: bytes), nil))
+                var breakdown: [Slice] = []
+                if let policy = build.kind.contents {
+                    let survey = ContentsSurvey.measure(policy, path, now: Date())
+                    bytes = survey.bytes
+                    breakdown = Findings.breakdown(total: bytes, children: survey.children)
+                }
+                var finding = Findings.buildFolder(build, path: path, bytes: bytes, breakdown: breakdown)
+                if build.kind.checkInUse { finding = Findings.checkingUse(finding, processUsage()) }
+                return .success((finding, build.kind.contents))
             case .worktree(let worktree):
                 let audit = makeAuditor().audit(worktree)
                 return .success((Findings.worktree(worktree, audit: audit, home: home, bytes: bytes), nil))
