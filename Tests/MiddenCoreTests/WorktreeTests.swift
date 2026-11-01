@@ -172,12 +172,53 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         #expect(match.gitDir == home.path("repo/.git/worktrees/relative"))
     }
 
-    @Test func parsesLsofOutput() {
-        let output = "p101\nczsh\nfcwd\nn/Users/me/repo/wt\np202\ncnode\nfcwd\nn/Users/me/repo/wt-other\n"
-        let processes = ProcessDirectories.parse(output)
+    @Test func collectsWorkingDirectoriesOfThisUsersProcesses() {
+        let entries = [
+            ProcessDirectories.Entry(pid: 101, uid: 501, command: "zsh"),
+            ProcessDirectories.Entry(pid: 202, uid: 501, command: "node"),
+            ProcessDirectories.Entry(pid: 303, uid: 501, command: "gone"),
+            ProcessDirectories.Entry(pid: 404, uid: 0, command: "root-daemon"),
+        ]
+        let directories: [Int32: Result<String, POSIXError>] = [
+            101: .success("/Users/me/repo/wt"), 202: .success("/Users/me/repo/wt-other"),
+            303: .failure(POSIXError(.ESRCH)), 404: .failure(POSIXError(.EPERM)),
+        ]
+        let processes = ProcessDirectories.collect(entries, user: 501) { directories[$0]! }
+        #expect(processes.failure == nil)
         #expect(processes.processes.count == 2)
-        #expect(processes.inside("/Users/me/repo/wt").map(\.pid) == [101])
+        #expect(processes.inside("/Users/me/repo/wt").map { $0.pid } == [101])
         #expect(processes.inside("/Users/me/repo").count == 2)
+
+        // An own process whose directory can't be read makes the listing incomplete.
+        let blocked = ProcessDirectories.collect(entries, user: 501) { pid in
+            pid == 202 ? .failure(POSIXError(.EPERM)) : directories[pid]!
+        }
+        #expect(blocked.failure?.contains("node (pid 202)") == true)
+    }
+
+    @Test func incompleteProcessListingFailsTheInUseCheck() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        let incomplete = ProcessDirectories(processes: [], failure: "the system wouldn't list processes")
+        let result = try audit(home, worktree, processes: incomplete)
+        #expect(result.safety == .info)
+        let inUse = try #require(check(result, "Not in use"))
+        #expect(!inUse.passed)
+        #expect(inUse.detail.contains("Couldn't check running programs"))
+    }
+
+    @Test func listsRealProcessesInProcess() throws {
+        let dir = try TempDir()
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["60"]
+        sleeper.currentDirectoryURL = dir.url
+        try sleeper.run()
+        defer { sleeper.terminate() }
+        let processes = ProcessDirectories.current()
+        #expect(processes.inside(dir.path).map { $0.pid } == [sleeper.processIdentifier])
+        #expect(processes.inside(dir.path).first?.command == "sleep")
     }
 
     @Test func lastActivityComesFromTheLastReflogEntry() throws {

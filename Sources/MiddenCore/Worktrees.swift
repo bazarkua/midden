@@ -7,47 +7,6 @@ struct WorktreeMatch: Sendable, Hashable {
     var gitDir: String
 }
 
-/// The working directory of every process we can see, from one lsof run.
-struct ProcessDirectories: Sendable {
-    struct Process: Sendable, Hashable {
-        var pid: Int32
-        var command: String
-        var directory: String
-    }
-
-    var processes: [Process]
-
-    /// Runs `lsof -a -d cwd -F pcn` once.
-    static func current() -> ProcessDirectories {
-        // lsof exits with 1 when it can't inspect some processes; what it
-        // printed is still right.
-        parse(Command.run(["/usr/sbin/lsof", "-a", "-d", "cwd", "-F", "pcn"], timeout: 30).output)
-    }
-
-    /// Parses lsof's field output: `p<pid>`, `c<command>`, `n<path>` lines.
-    static func parse(_ output: String) -> ProcessDirectories {
-        var result: [Process] = []
-        var pid: Int32 = 0
-        var command = ""
-        for line in output.split(separator: "\n") {
-            guard let tag = line.first else { continue }
-            let value = String(line.dropFirst())
-            switch tag {
-            case "p": pid = Int32(value) ?? 0
-            case "c": command = value
-            case "n": result.append(Process(pid: pid, command: command, directory: value))
-            default: break
-            }
-        }
-        return ProcessDirectories(processes: result)
-    }
-
-    /// Processes working in `path` or below it.
-    func inside(_ path: String) -> [Process] {
-        processes.filter { $0.directory == path || $0.directory.hasPrefix(path + "/") }
-    }
-}
-
 /// What Midden found out about a worktree before calling it safe.
 struct WorktreeAudit: Sendable {
     /// For grouping: the repository's name, or the worktree's own name when
@@ -181,7 +140,13 @@ struct WorktreeAuditor: Sendable {
         }
 
         let users = processes.inside(path)
-        if users.isEmpty {
+        if users.isEmpty, let failure = processes.failure {
+            // Not seeing a program here proves nothing if the listing is incomplete.
+            checks.append(SafetyCheck(
+                title: "Not in use", passed: false,
+                detail: "Couldn't check running programs: \(failure)."))
+            steps.append("scan again, and quit any program that may be working in it")
+        } else if users.isEmpty {
             checks.append(SafetyCheck(
                 title: "Not in use", passed: true,
                 detail: "No running program has its working directory in it."))
