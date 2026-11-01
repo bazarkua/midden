@@ -13,7 +13,7 @@ private func exists(_ path: String) -> Bool {
 
 @Suite struct ExternalWorktreeTests {
     private func scan(_ home: TempDir) async throws -> ScanReport {
-        var options = ScanOptions(home: home.url, minimumBytes: 1_000_000)
+        var options = ScanOptions.fakeHome(home, minimumBytes: 1_000_000)
         options.worktreeActiveWindow = 0
         return try await Scanner(options: options).scan()
     }

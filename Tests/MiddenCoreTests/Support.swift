@@ -104,6 +104,17 @@ final class TempDir {
     }
 }
 
+extension ScanOptions {
+    /// Options for scanning a fake home. Full Disk Access is stated rather
+    /// than probed: a fake home has none of the folders the probe lists,
+    /// and an inconclusive probe means no access.
+    static func fakeHome(_ home: TempDir, minimumBytes: Int64 = 50_000_000) -> ScanOptions {
+        var options = ScanOptions(home: home.url, minimumBytes: minimumBytes)
+        options.fullDiskAccess = true
+        return options
+    }
+}
+
 /// Runs a command and returns trimmed stdout; throws if it fails.
 @discardableResult
 func sh(_ arguments: [String], in directory: String? = nil) throws -> String {

@@ -172,7 +172,7 @@ private final class Collector: Sendable {
         try home.write("worktrees/task/node_modules/dep/index.js", bytes: 2_000_000)
 
         let collector = Collector()
-        var options = ScanOptions(home: home.url, minimumBytes: 1_000_000)
+        var options = ScanOptions.fakeHome(home, minimumBytes: 1_000_000)
         options.expectedBytes = 10_000_000
         _ = try await Scanner(options: options).scan { collector.add($0) }
 

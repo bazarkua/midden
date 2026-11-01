@@ -46,17 +46,23 @@ enum System {
     }
 
     /// Without Full Disk Access, macOS refuses to list these folders even to
-    /// their owner.
-    static func needsFullDiskAccess(home: String) -> Bool {
+    /// their owner, at once and without a prompt (measured on macOS 27).
+    static let fullDiskAccessProbes = ["Library/Safari", "Library/Mail", ".Trash"]
+
+    /// True when a protected folder could be listed, false when one was
+    /// refused, nil when none of them settles it (absent, or another error).
+    static func fullDiskAccessProbe(home: String) -> Bool? {
         let reader = DirectoryReader(bufferSize: 16 * 1024)
-        for relative in ["Library/Safari", "Library/Mail", ".Trash"] {
+        var granted: Bool?
+        for relative in fullDiskAccessProbes {
             do {
                 _ = try reader.entries(atPath: home + "/" + relative)
+                granted = true
             } catch {
-                if error.code == .EPERM || error.code == .EACCES { return true }
+                if error.code == .EPERM || error.code == .EACCES { return false }
             }
         }
-        return false
+        return granted
     }
 }
 

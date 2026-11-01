@@ -131,7 +131,7 @@ private func file(_ path: String, _ bytes: Int64) -> SpaceRecord {
         let original = try home.write("Downloads/a/tool.dmg", bytes: 120_000_000)
         try home.mkdir("Downloads/b")
         try FileManager.default.linkItem(atPath: original, toPath: home.path("Downloads/b/tool.dmg"))
-        let report = try await Scanner(options: ScanOptions(home: home.url, minimumBytes: 1_000_000)).scan()
+        let report = try await Scanner(options: ScanOptions.fakeHome(home, minimumBytes: 1_000_000)).scan()
         let installer = try #require(report.findings.first { $0.category == .largeFiles })
         let marked = all(try #require(report.spaceMap)).filter { $0.findingID == installer.id }
         // Exactly one node carries it: whichever name the walk counted the bytes under.
@@ -149,7 +149,7 @@ private func file(_ path: String, _ bytes: Int64) -> SpaceRecord {
         try FileManager.default.linkItem(atPath: original, toPath: home.path("Data/releases/latest/model.bin"))
         try home.write("Data/small.txt", bytes: 1_000)
 
-        let report = try await Scanner(options: ScanOptions(home: home.url, minimumBytes: 1_000_000)).scan()
+        let report = try await Scanner(options: ScanOptions.fakeHome(home, minimumBytes: 1_000_000)).scan()
         let map = try #require(report.spaceMap)
         #expect(map.path == home.path)
         #expect(map.bytes == report.bytesScanned)

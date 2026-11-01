@@ -35,15 +35,18 @@ public struct ScanOptions: Sendable {
 /// Whether this process has Full Disk Access.
 public enum FullDiskAccess {
     /// Tries to list folders macOS opens only to apps with Full Disk Access
-    /// (~/Library/Safari, ~/Library/Mail, ~/.Trash). A refusal means no
-    /// access; folders that don't exist prove nothing either way. Gives up
-    /// after a few seconds and returns false, so it never hangs the caller.
-    /// Blocks: call it off the main thread.
+    /// (~/Library/Safari, ~/Library/Mail, ~/.Trash). Granted only when one
+    /// of them lists and none is refused. Folders that don't exist prove
+    /// nothing, and an unproven answer is "no": a scan that wrongly assumed
+    /// access would open Desktop, Documents and Downloads and raise a
+    /// permission prompt for each. Gives up after a few seconds and returns
+    /// false, so it never hangs the caller. Blocks: call it off the main
+    /// thread.
     public static func isGranted(
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Bool {
         let path = (try? System.canonicalPath(home.path)) ?? home.path
-        return System.withDeadline(WalkDefaults.stallTimeout) { !System.needsFullDiskAccess(home: path) }
+        return System.withDeadline(WalkDefaults.stallTimeout) { System.fullDiskAccessProbe(home: path) == true }
             ?? false
     }
 

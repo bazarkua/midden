@@ -29,7 +29,7 @@ import Testing
     }
 
     private func scan(_ home: TempDir) async throws -> ScanReport {
-        var options = ScanOptions(home: home.url, minimumBytes: 1_000_000)
+        var options = ScanOptions.fakeHome(home, minimumBytes: 1_000_000)
         options.threadCount = 4
         options.worktreeActiveWindow = 0
         return try await Scanner(options: options).scan()
@@ -124,10 +124,10 @@ import Testing
         chmod(home.path, 0o000)
         defer { chmod(home.path, 0o755) }
         await #expect(throws: MiddenError.self) {
-            try await Scanner(options: ScanOptions(home: home.url)).scan()
+            try await Scanner(options: ScanOptions.fakeHome(home)).scan()
         }
         do {
-            _ = try await Scanner(options: ScanOptions(home: home.url)).scan()
+            _ = try await Scanner(options: ScanOptions.fakeHome(home)).scan()
         } catch MiddenError.unreadable(let path, let code) {
             #expect(path == home.path)
             #expect(code == EACCES)
@@ -140,7 +140,7 @@ import Testing
 
     @Test func cancellingTheTaskThrowsCancelled() async throws {
         let (home, _) = try makeHome()
-        let scanner = Scanner(options: ScanOptions(home: home.url))
+        let scanner = Scanner(options: ScanOptions.fakeHome(home))
         let task = Task {
             // Starts scanning only once cancelled, so the outcome is deterministic.
             while !Task.isCancelled { await Task.yield() }
@@ -157,10 +157,16 @@ import Testing
 
     @Test func probesFullDiskAccess() async throws {
         let home = try TempDir("home")
-        // No protected folders exist in a fake home, so nothing is refused.
+        // None of the probed folders exist: that proves nothing, so it's
+        // no access. Reporting access here would let the scan open
+        // Desktop, Documents and Downloads, one permission prompt each.
+        #expect(!FullDiskAccess.isGranted(home: home.url))
+        #expect(!(await FullDiskAccess.check(home: home.url)))
+        // A protected folder that lists is proof.
+        try home.mkdir("Library/Safari")
         #expect(FullDiskAccess.isGranted(home: home.url))
         #expect(await FullDiskAccess.check(home: home.url))
-        try home.mkdir("Library/Safari")
+        // One that refuses is proof of the opposite.
         chmod(home.path("Library/Safari"), 0o000)
         defer { chmod(home.path("Library/Safari"), 0o755) }
         #expect(!FullDiskAccess.isGranted(home: home.url))
@@ -193,7 +199,7 @@ import Testing
         try home.mkdir("Downloads/releases/latest")
         try FileManager.default.linkItem(atPath: original, toPath: link)
 
-        let report = try await Scanner(options: ScanOptions(home: home.url, minimumBytes: 1_000_000)).scan()
+        let report = try await Scanner(options: ScanOptions.fakeHome(home, minimumBytes: 1_000_000)).scan()
         let files = report.findings.filter { $0.category == .largeFiles }
         #expect(files.count == 1)
         #expect(files.first?.path == original)
