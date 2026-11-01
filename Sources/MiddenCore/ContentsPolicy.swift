@@ -131,6 +131,22 @@ final class ContentsTally: Sendable {
     }
 }
 
+/// Opens a folder relative to an open parent, without following a symlink.
+/// Returns the descriptor, or -1 with errno set. Replaceable in tests, to
+/// run out of descriptors on purpose.
+typealias FolderOpener = (_ parent: Int32, _ name: String) -> Int32
+
+/// The deletion walks hold one descriptor per level they're in, so how
+/// deep they go is also how many descriptors they hold. Past this depth
+/// they don't go further, and say so.
+let deletionDepthLimit = 128
+
+func openFolder(_ parent: Int32, _ name: String) -> Int32 {
+    var fd: Int32
+    repeat { fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) } while fd < 0 && errno == EINTR
+    return fd
+}
+
 /// Measures and applies a contents policy, for the scanner and the cleaner.
 enum ContentsSurvey {
     /// A listing function with the walker's signature.
@@ -175,6 +191,10 @@ enum ContentsSurvey {
                 let count = outcome.unreadableFolders
                 problems.append("couldn't read \(count) \(count == 1 ? "folder" : "folders") inside, so \(count == 1 ? "its" : "their") files were left alone")
             }
+            if outcome.tooDeep > 0 {
+                let count = outcome.tooDeep
+                problems.append("didn't go into \(count) \(count == 1 ? "folder" : "folders") nested more than \(deletionDepthLimit) levels deep")
+            }
             guard !problems.isEmpty else { return (nil, outcome.bytes) }
             let deleted = "Deleted \(outcome.files) old \(outcome.files == 1 ? "file" : "files")"
             return (deleted + ", but " + problems.joined(separator: " and ") + ".", outcome.bytes)
@@ -203,11 +223,19 @@ struct TreeRemoval {
     /// Bytes freed: allocated blocks of what was removed, files with other
     /// names left uncounted.
     var bytes: Int64 = 0
-    /// Names that couldn't be removed.
+    /// Names that couldn't be removed. A folder holding one stays too.
     var failures: [String] = []
+    /// Levels below the first folder it goes into, at most; see
+    /// `deletionDepthLimit`. Deeper folders stay, and count as failures.
+    var maxDepth = deletionDepthLimit
+    var open: FolderOpener = openFolder
     private let reader = DirectoryReader()
 
     mutating func remove(_ name: String, in parent: Int32) {
+        remove(name, in: parent, depth: 0)
+    }
+
+    private mutating func remove(_ name: String, in parent: Int32, depth: Int) {
         var info = stat()
         guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else {
             if errno != ENOENT { failures.append(name) }
@@ -219,8 +247,13 @@ struct TreeRemoval {
                 failures.append(name)
                 return
             }
-            var fd: Int32
-            repeat { fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) } while fd < 0 && errno == EINTR
+            // Too deep: one more descriptor held per level. Out of
+            // descriptors (EMFILE) fails the same way: the folder stays.
+            guard depth < maxDepth else {
+                failures.append(name)
+                return
+            }
+            let fd = open(parent, name)
             guard fd >= 0 else {
                 failures.append(name)
                 return
@@ -234,7 +267,7 @@ struct TreeRemoval {
                 return
             }
             let before = failures.count
-            for entry in entries { remove(entry.name, in: fd) }
+            for entry in entries { remove(entry.name, in: fd, depth: depth + 1) }
             close(fd)
             if failures.count > before { return }
             guard unlinkat(parent, name, AT_REMOVEDIR) == 0 else {
@@ -264,6 +297,10 @@ struct AgedFiles {
     var minimumAge: TimeInterval
     var now: Date
     var lister: Lister = { fd, reader throws(POSIXError) in try reader.listing(directory: fd) }
+    /// Levels below the root it goes into, at most; see
+    /// `deletionDepthLimit`. Deeper folders are left alone and counted.
+    var maxDepth = deletionDepthLimit
+    var open: FolderOpener = openFolder
 
     /// What a pass found or did.
     struct Outcome: Sendable, Hashable {
@@ -279,6 +316,8 @@ struct AgedFiles {
         var unreadableFolders = 0
         /// Files that were eligible but couldn't be deleted, by name.
         var failures: [String] = []
+        /// Folders deeper than `maxDepth`, not gone into.
+        var tooDeep = 0
     }
 
     /// Whether a listed entry may be deleted: a regular file with one link
@@ -327,7 +366,7 @@ struct AgedFiles {
         var outcome = Outcome()
         let reader = DirectoryReader()
         // Depth first, holding one descriptor per level.
-        func visit(_ fd: Int32, path: String, top: String?) {
+        func visit(_ fd: Int32, path: String, top: String?, depth: Int) {
             defer { close(fd) }
             let listing: DirectoryListing
             do {
@@ -343,10 +382,13 @@ struct AgedFiles {
                 case .directory:
                     // Another device: a disk mounted here. Never entered.
                     guard Int64(entry.device) == device else { continue }
-                    var sub: Int32
-                    repeat {
-                        sub = openat(fd, entry.name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                    } while sub < 0 && errno == EINTR
+                    guard depth < maxDepth else {
+                        outcome.tooDeep += 1
+                        continue
+                    }
+                    // EMFILE (out of descriptors) counts as unreadable: the
+                    // folder's files stay, and the result says so.
+                    let sub = open(fd, entry.name)
                     guard sub >= 0 else {
                         if errno != ENOENT { outcome.unreadableFolders += 1 }
                         continue
@@ -356,7 +398,7 @@ struct AgedFiles {
                         close(sub)
                         continue
                     }
-                    visit(sub, path: path + "/" + entry.name, top: child)
+                    visit(sub, path: path + "/" + entry.name, top: child, depth: depth + 1)
                 case .file:
                     guard isEligible(
                         kind: .file, links: UInt64(entry.linkCount), device: Int64(entry.device),
@@ -386,7 +428,7 @@ struct AgedFiles {
                 }
             }
         }
-        visit(rootFD, path: root, top: nil)
+        visit(rootFD, path: root, top: nil, depth: 0)
         return outcome
     }
 }
