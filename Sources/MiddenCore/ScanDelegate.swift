@@ -21,8 +21,12 @@ final class ScanDelegate: WalkDelegate {
     }
 
     private let fileHits = Mutex<[FileHit]>([])
+    private let repositories = Mutex<[String]>([])
 
     var files: [FileHit] { fileHits.withLock { $0 } }
+
+    /// `.git` folders that list linked worktrees, wherever the walk saw them.
+    var gitDirectories: [String] { repositories.withLock { $0 } }
 
     func rootContext() -> Context {
         Context(parentRelative: nil, scope: Scope(), parent: .none)
@@ -37,6 +41,9 @@ final class ScanDelegate: WalkDelegate {
                     parentRelative: [], scope: Scope(), parent: ProjectFacts(entries: dir.entries)))
         }
         let context = dir.context
+        if dir.name == ".git", dir.entries.contains(where: { $0.name == "worktrees" && $0.kind == .directory }) {
+            repositories.withLock { $0.append(dir.path) }
+        }
         // Inside node_modules, a cache or a .git folder: nothing to classify.
         if context.scope.claimed {
             return Visit(mark: nil, childContext: context)

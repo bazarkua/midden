@@ -31,6 +31,13 @@ private func audit(
     return WorktreeAuditor(processes: processes, activeWindow: activeWindow).audit(match)
 }
 
+/// The finding the scanner would show for a worktree inside `home`.
+private func finding(_ home: TempDir, _ path: String, activeWindow: TimeInterval = 0) throws -> Finding {
+    let match = WorktreeMatch(path: path, gitDir: "")
+    let result = try audit(home, path, activeWindow: activeWindow)
+    return Findings.worktree(match, audit: result, home: home.path, bytes: 0)
+}
+
 private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
     audit.checks.first { $0.title == title }
 }
@@ -49,7 +56,7 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         #expect(result.action == CleanAction.run(["git", "-C", repository, "worktree", "remove", worktree]))
         #expect(result.repositoryName == "repo")
         #expect(result.branch == "feature")
-        #expect(result.explanation.contains("the branch “feature” and its commits stay"))
+        #expect(try finding(home, worktree).explanation.contains("the branch “feature” and its commits stay"))
         let lastActivity = try #require(result.lastActivity)
         #expect(abs(lastActivity.timeIntervalSinceNow) < 120)
     }
@@ -102,7 +109,7 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         try sh(["git", "-C", worktree, "switch", "-q", "--detach"])
         let result = try audit(home, worktree)
         #expect(result.safety == .safe)
-        #expect(result.explanation.contains("its commits stay on their branch"))
+        #expect(try finding(home, worktree).explanation.contains("its commits stay on their branch"))
     }
 
     @Test func lockedWorktreeBlocksRemoval() throws {

@@ -81,7 +81,7 @@ struct CleanEngine {
             return refuse("Not a canonical absolute path.")
         }
         guard path.hasPrefix(home + "/") else {
-            return refuse("It's outside your home folder.")
+            return externalWorktree(path)
         }
         var info = stat()
         guard lstat(path, &info) == 0 else {
@@ -123,9 +123,21 @@ struct CleanEngine {
                 return .success(Findings.buildFolder(build, path: path, bytes: bytes))
             case .worktree(let worktree):
                 let audit = WorktreeAuditor(processes: .current()).audit(worktree)
-                let finding = Findings.worktree(worktree, audit: audit, bytes: bytes)
-                return .success(finding)
+                return .success(Findings.worktree(worktree, audit: audit, home: home, bytes: bytes))
             }
+        }
+    }
+
+    /// Outside home, only a linked worktree of a repository inside home is
+    /// accepted, and only when the link is proven both ways again now.
+    private func externalWorktree(_ path: String) -> Result<Finding, Refusal> {
+        switch ExternalWorktrees.verify(path, home: home) {
+        case .failure(let unproven):
+            return refuse("It's outside your home folder and isn't a worktree of a repository in it: \(unproven.reason)")
+        case .success(let worktree):
+            let bytes = (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
+            let audit = WorktreeAuditor(processes: .current()).audit(worktree)
+            return .success(Findings.worktree(worktree, audit: audit, home: home, bytes: bytes))
         }
     }
 

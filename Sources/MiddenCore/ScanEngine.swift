@@ -21,7 +21,7 @@ struct ScanEngine {
         let now = Date()
         let minimum = options.minimumBytes
         var findings: [Finding] = []
-        var worktrees: [(match: WorktreeMatch, directory: SizedDirectory<DirectoryMatch>)] = []
+        var worktrees: [(match: WorktreeMatch, bytes: Int64, breakdown: [Slice])] = []
         let devicesFolder = Simulators.devicesFolder(home: home)
         var simulatorSizes: [String: Int64] = [:]
 
@@ -43,8 +43,22 @@ struct ScanEngine {
                     build, path: directory.path, bytes: total, breakdown: breakdown, now: now,
                     idleWindow: options.projectIdleWindow))
             case .worktree(let worktree):
-                worktrees.append((worktree, directory))
+                worktrees.append((worktree, total, breakdown))
             }
+        }
+
+        // Worktrees outside home, found through the repositories inside it,
+        // sized with the same walker.
+        let external = ExternalWorktrees.discover(gitDirectories: delegate.gitDirectories, home: home)
+        for worktree in external.worktrees {
+            if cancellation.isCancelled { throw MiddenError.cancelled }
+            guard let sized = try? Walker(root: worktree.path, delegate: SizeOnly())
+                .run(cancellation: cancellation)
+            else { continue }
+            guard sized.totalBytes >= minimum else { continue }
+            worktrees.append((
+                worktree, sized.totalBytes,
+                Findings.breakdown(total: sized.totalBytes, children: sized.root?.children ?? [])))
         }
 
         if !worktrees.isEmpty {
@@ -52,10 +66,9 @@ struct ScanEngine {
                 processes: .current(), now: now, activeWindow: options.worktreeActiveWindow)
             let audits = Background.map(worktrees.map(\.match)) { auditor.audit($0) }
             for (worktree, audit) in zip(worktrees, audits) {
-                let total = worktree.directory.total
                 findings.append(Findings.worktree(
-                    worktree.match, audit: audit, bytes: total,
-                    breakdown: Findings.breakdown(total: total, children: worktree.directory.children)))
+                    worktree.match, audit: audit, home: home, bytes: worktree.bytes,
+                    breakdown: worktree.breakdown))
             }
         }
 

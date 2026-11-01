@@ -50,13 +50,17 @@ struct ProcessDirectories: Sendable {
 
 /// What Midden found out about a worktree before calling it safe.
 struct WorktreeAudit: Sendable {
+    /// For grouping: the repository's name, or the worktree's own name when
+    /// git couldn't tell.
     var repositoryName: String
+    /// The main worktree, or the repository itself when it's bare. Nil when
+    /// git couldn't tell.
+    var repository: String?
     var branch: String?
     var checks: [SafetyCheck]
     var safety: Safety
     var action: CleanAction
     var lastActivity: Date?
-    var explanation: String
 }
 
 /// Checks a worktree the way a careful person would before deleting it:
@@ -183,41 +187,48 @@ struct WorktreeAuditor: Sendable {
             detail: lastActivity.map { "Last checkout or commit \(Dates.describe($0, now: now))." }
                 ?? "Midden couldn't tell when it was last used."))
         return WorktreeAudit(
-            repositoryName: repositoryName, branch: branch, checks: checks,
+            repositoryName: repositoryName, repository: repository, branch: branch, checks: checks,
             safety: recent ? .review : .safe,
             action: .run(["git", "-C", repository, "worktree", "remove", path]),
-            lastActivity: lastActivity,
-            explanation: Self.explanation(repositoryName: repositoryName, branch: branch, removable: true))
+            lastActivity: lastActivity)
     }
 
     private func blocked(
         _ worktree: WorktreeMatch, repositoryName: String?, branch: String?, lastActivity: Date?,
         checks: [SafetyCheck], steps: [String], repository: String?
     ) -> WorktreeAudit {
-        let name = repositoryName ?? "its"
         let remove = repository.map { "`git -C \(Self.quoted($0)) worktree remove \(Self.quoted(worktree.path))`" }
             ?? "`git worktree remove`"
         var instructions = steps.joined(separator: ", ")
         instructions = instructions.prefix(1).uppercased() + instructions.dropFirst()
         return WorktreeAudit(
             repositoryName: repositoryName ?? (worktree.path as NSString).lastPathComponent,
-            branch: branch, checks: checks, safety: .info,
+            repository: repository, branch: branch, checks: checks, safety: .info,
             action: .manual("\(instructions), then remove it with \(remove)."),
-            lastActivity: lastActivity,
-            explanation: Self.explanation(repositoryName: name, branch: branch, removable: false))
+            lastActivity: lastActivity)
     }
 
-    static func explanation(repositoryName: String, branch: String?, removable: Bool) -> String {
-        let what = """
-            A second checkout of the “\(repositoryName)” repository, made with `git worktree add`. \
-            AI coding tools like Claude Code and Codex create worktrees for parallel tasks and \
-            often leave them behind.
+    /// - Parameter outsideHome: found through its repository's list of worktrees.
+    static func explanation(
+        repositoryName: String?, branch: String?, removable: Bool, outsideHome: Bool = false
+    ) -> String {
+        let repository = repositoryName.map { "the “\($0)” repository" } ?? "a git repository"
+        var text = """
+            A second checkout of \(repository), made with `git worktree add`. AI coding tools \
+            like Claude Code and Codex create worktrees for parallel tasks and often leave \
+            them behind.
             """
+        if outsideHome {
+            text += """
+                 It's outside your home folder; Midden found it in the repository's list of \
+                worktrees and checked that each points to the other.
+                """
+        }
         guard removable else {
-            return what + " Midden won't remove it until the checks below pass."
+            return text + " Midden won't remove it until the checks below pass."
         }
         let kept = branch.map { "the branch “\($0)” and its commits stay" } ?? "its commits stay on their branch"
-        return what + " Removing it deletes this folder only; \(kept) in the repository."
+        return text + " Removing it deletes this folder only; \(kept) in the repository."
     }
 
     /// When the worktree's HEAD last moved. Git appends a line to logs/HEAD,

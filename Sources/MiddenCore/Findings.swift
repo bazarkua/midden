@@ -73,15 +73,20 @@ enum Findings {
     }
 
     static func worktree(
-        _ match: WorktreeMatch, audit: WorktreeAudit, bytes: Int64, breakdown: [Slice] = []
+        _ match: WorktreeMatch, audit: WorktreeAudit, home: String, bytes: Int64,
+        breakdown: [Slice] = []
     ) -> Finding {
         let name = (match.path as NSString).lastPathComponent
         let title = audit.branch.map { $0 == name ? "Worktree \(name)" : "Worktree \(name) (\($0))" }
             ?? "Worktree \(name)"
+        let explanation = WorktreeAuditor.explanation(
+            repositoryName: audit.repository == nil ? nil : audit.repositoryName,
+            branch: audit.branch, removable: audit.action.isAutomatic,
+            outsideHome: !match.path.hasPrefix(home + "/"))
         return Finding(
             id: match.path, category: .worktrees, title: title, path: match.path,
             group: audit.repositoryName, bytes: bytes, safety: audit.safety,
-            explanation: audit.explanation, checks: audit.checks, action: audit.action,
+            explanation: explanation, checks: audit.checks, action: audit.action,
             lastActivity: audit.lastActivity, breakdown: breakdown)
     }
 
@@ -156,7 +161,7 @@ enum Findings {
     }
 
     /// The largest immediate children, biggest first, with the rest as "Other".
-    static func breakdown(total: Int64, children: [SizedDirectory<DirectoryMatch>.Child]) -> [Slice] {
+    static func breakdown<Mark>(total: Int64, children: [SizedDirectory<Mark>.Child]) -> [Slice] {
         let top = children.filter { $0.bytes > 0 }.sorted { $0.bytes > $1.bytes }.prefix(6)
         var slices = top.map { Slice(name: $0.name, bytes: $0.bytes) }
         let other = total - slices.reduce(0) { $0 + $1.bytes }
