@@ -43,7 +43,10 @@
 # machine conditions), results.csv (every measured run) and raw/ (each
 # tool's output, errors and rusage). User and system CPU come from
 # /usr/bin/time -l, which includes children the tool waited for (git, for
-# midden scan); peak RSS is that of the largest single process.
+# midden scan); peak RSS is that of the largest single process. The report
+# also lists active system extensions: endpoint security software (such as
+# CrowdStrike Falcon) sees every file open and process spawn, and can slow
+# all the tools, so numbers from Macs with and without it don't compare.
 # Needs only what macOS ships plus a Swift toolchain; bash 3.2 compatible.
 
 set -o pipefail
@@ -233,6 +236,12 @@ conditions() {
         "$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo ?) efficiency cores" \
         "($ncpu logical), $(($(sysctl -n hw.memsize) / 1073741824)) GiB memory"
     echo "- macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+    # Endpoint security software inspects file and process events, and can
+    # slow every tool's opens and spawns.
+    local extensions
+    extensions=$(systemextensionsctl list 2>/dev/null \
+        | awk -F'\t' '/\[activated enabled\]/ { printf "%s%s (%s)", (n++ ? "; " : ""), $5, $4 }')
+    echo "- Active system extensions: ${extensions:-none}"
     echo "- Swift: $(swift --version 2>&1 | grep -m1 -o 'Swift version [^ ]*'), swift build -c release." \
         "C: $(clang --version | head -1), clang $c_flags"
     echo "- Engine commit: $commit"
