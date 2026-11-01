@@ -90,6 +90,14 @@ import Testing
         #expect(entries[0].inode == entries[1].inode)
     }
 
+    /// devfs isn't APFS; getattrlistbulk (or the readdir fallback) must still work.
+    @Test func readsOtherFileSystems() throws {
+        let entries = try DirectoryReader().entries(atPath: "/dev")
+        let expected = try lstatListing("/dev")
+        #expect(Set(entries.map(\.name)) == Set(expected.keys))
+        #expect(entries.contains { $0.name == "null" && $0.kind == .other })
+    }
+
     @Test func refusesSymlinkedDirectory() throws {
         let dir = try TempDir()
         try dir.mkdir("real")

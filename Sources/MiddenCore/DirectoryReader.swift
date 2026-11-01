@@ -60,16 +60,19 @@ final class DirectoryReader {
         request.fileattr = attrgroup_t(ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE)
 
         var result: [DirectoryEntry] = []
+        var firstCall = true
         while true {
             let count = getattrlistbulk(fd, &request, buffer.baseAddress!, buffer.count, 0)
             bulkCalls += 1
             if count < 0 {
                 let code = errno
-                if code == ENOTSUP, bulkCalls == 1 {
+                // Some file systems don't support it at all; they fail at once.
+                if code == ENOTSUP, firstCall {
                     return try Self.readdirEntries(directory: fd)
                 }
                 throw POSIXError(code)
             }
+            firstCall = false
             if count == 0 { return result }
             var record = UnsafeRawPointer(buffer.baseAddress!)
             for _ in 0..<count {
