@@ -99,7 +99,9 @@ struct ScanEngine {
 }
 
 enum WalkDefaults {
-    /// Listing is I/O-bound on an SSD; past a dozen threads the gains stop.
+    /// Listing is mostly kernel time. Walking ~/Work (2.6M items) on a
+    /// 14-core M-series Mac took 39 s on 1 thread, 11 s on 4, 8.4–9.5 s on
+    /// 8 and 12, and got slower again on 16 and 24.
     static var threadCount: Int {
         min(max(ProcessInfo.processInfo.activeProcessorCount, 4), 12)
     }
