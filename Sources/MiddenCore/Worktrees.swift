@@ -31,10 +31,12 @@ struct WorktreeAuditor: Sendable {
     var now = Date()
     /// Worktrees used more recently than this are "review", not "safe".
     var activeWindow: TimeInterval = 7 * 86_400
+    /// When the worktree was last used; replaceable in tests.
+    var activityDate: @Sendable (_ gitDir: String) -> Date? = { WorktreeAuditor.lastActivity(gitDir: $0) }
 
     func audit(_ worktree: WorktreeMatch) -> WorktreeAudit {
         let path = worktree.path
-        let lastActivity = Self.lastActivity(gitDir: worktree.gitDir)
+        let lastActivity = activityDate(worktree.gitDir)
         guard let git else {
             return blocked(
                 worktree, repositoryName: nil, branch: nil, lastActivity: lastActivity,
@@ -164,14 +166,16 @@ struct WorktreeAuditor: Sendable {
                 checks: checks, steps: steps, repository: repository)
         }
 
-        let recent = lastActivity.map { now.timeIntervalSince($0) < activeWindow } ?? false
+        // An unknown date is not evidence of an idle worktree: the check fails
+        // and the verdict stays "review".
+        let idle = lastActivity.map { now.timeIntervalSince($0) >= activeWindow } ?? false
         checks.append(SafetyCheck(
-            title: "Not used lately", passed: !recent,
+            title: "Not used lately", passed: idle,
             detail: lastActivity.map { "Last checkout or commit \(Dates.describe($0, now: now))." }
-                ?? "Midden couldn't tell when it was last used."))
+                ?? "Couldn't tell when it was last used."))
         return WorktreeAudit(
             repositoryName: repositoryName, repository: repository, branch: branch, checks: checks,
-            safety: recent ? .review : .safe,
+            safety: idle ? .safe : .review,
             action: .run(["git", "-C", repository, "worktree", "remove", path]),
             lastActivity: lastActivity)
     }

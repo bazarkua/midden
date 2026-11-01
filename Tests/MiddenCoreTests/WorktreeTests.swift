@@ -112,6 +112,25 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         #expect(try finding(home, worktree).explanation.contains("its commits stay on their branch"))
     }
 
+    @Test func unknownLastUseIsReviewNotSafe() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        guard case .directory(.worktree(let match)?, _) = try reclassify(home, "worktrees/feature") else {
+            Issue.record("not a worktree")
+            return
+        }
+        var auditor = WorktreeAuditor(processes: ProcessDirectories(processes: []), activeWindow: 0)
+        auditor.activityDate = { _ in nil }
+        let result = auditor.audit(match)
+        #expect(result.safety == .review)
+        let lastUse = try #require(check(result, "Not used lately"))
+        #expect(!lastUse.passed)
+        #expect(lastUse.detail == "Couldn't tell when it was last used.")
+        #expect(result.action.isAutomatic)
+        _ = worktree
+    }
+
     @Test func lockedWorktreeBlocksRemoval() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
