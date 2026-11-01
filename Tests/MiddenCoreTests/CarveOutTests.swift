@@ -7,6 +7,37 @@ import Testing
 // home in a temporary folder.
 
 @Suite struct CarveOutTests {
+    // MARK: renv
+
+    /// renv installs each package once into its cache and links it into
+    /// every project's library. Cleaning everything Midden offers, Safe
+    /// and Review alike, must leave a renv project's packages loadable.
+    @Test func renvProjectsKeepTheirPackagesWhenEverythingElseIsCleaned() async throws {
+        let home = try TempDir("home")
+        let cached = OwnershipTests.renv + "/cache/v5/R-4.4/aarch64-apple-darwin20/jsonlite/1.8.8/0a1b2c3d/jsonlite"
+        try home.write(cached + "/DESCRIPTION", text: "Package: jsonlite\nVersion: 1.8.8\n")
+        try home.write(cached + "/R/jsonlite.rdb", bytes: 200_000)
+        try home.write("Library/Caches/org.R-project.R/R/pak/metadata.rds", bytes: 200_000)
+        try home.write("Library/Caches/com.example.other/blob", bytes: 200_000)
+        try home.write("Library/Caches/Yarn/v6/blob", bytes: 200_000)
+        let library = try home.mkdir("code/analysis/renv/library/R-4.4/aarch64-apple-darwin20")
+        try home.write("code/analysis/renv.lock", text: "{}")
+        try FileManager.default.createSymbolicLink(atPath: library + "/jsonlite", withDestinationPath: home.path(cached))
+
+        let (report, byPath) = try await scanAll(home)
+        #expect(byPath[home.path(OwnershipTests.renv)]?.safety == .info)
+        let offered = report.findings.filter { $0.action.isAutomatic && $0.category != .largeFiles }.map(\.id)
+        #expect(offered.contains(home.path("Library/Caches/Yarn")))
+        #expect(offered.contains(home.path("Library/Caches/com.example.other")))
+        let results = await testCleaner(home).clean(offered).results
+        #expect(results.allSatisfy { $0.ok }, "\(results)")
+
+        // The project's link still leads to the package.
+        let description = try String(contentsOfFile: library + "/jsonlite/DESCRIPTION", encoding: .utf8)
+        #expect(description.contains("Package: jsonlite"))
+        #expect(!pathExists(home.path("Library/Caches/Yarn")))
+    }
+
     // MARK: Poetry
 
     static let poetry = "Library/Caches/pypoetry"
