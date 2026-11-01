@@ -367,37 +367,61 @@ for dir in "${dirs[@]}"; do
         echo
         echo "### Totals"
         echo
-        # Differences against the C scanner's first run, when it ran.
+        # Totals from measured round 1, which runs every tool within minutes,
+        # so a folder that changes (like a live home folder) changes less
+        # between tools than over the warm-up. midden scan writes its JSON
+        # to /dev/null when measured, so its totals come from its first run.
+        round1() {
+            local tool=$1
+            set -- $(awk -F, -v name="$name" -v tool="$tool" \
+                '$1 == name && $2 == tool && $3 == 1 { print $11, $12, $13; exit }' "$csv")
+            if [ "$1" = "-" ] && [ "$2" = "-" ] && [ -e "$out/raw/$tag-$tool.first.out" ]; then
+                totals "$tool" "$out/raw/$tag-$tool.first.out" "$out/raw/$tag-$tool.first.err"
+            else
+                echo "${1:--} ${2:--} ${3:--}"
+            fi
+        }
+        # Whether a tool's items and bytes were the same in every measured run.
+        steady() {
+            awk -F, -v name="$name" -v tool="$1" '$1 == name && $2 == tool {
+                    if ($11 != "-") items[$11]; if ($12 != "-") bytes[$12]; n++
+                }
+                END {
+                    for (i in items) a++; for (b in bytes) c++
+                    print (n == 0 || (a == 0 && c == 0)) ? "–" : (a <= 1 && c <= 1) ? "yes" : "no"
+                }' "$csv"
+        }
         base_items=-
         base_bytes=-
         for tool in c c-1 c-openat c-readdir c-readdir-1; do
-            if [ -e "$out/raw/$tag-$tool.first.out" ]; then
-                set -- $(totals "$tool" "$out/raw/$tag-$tool.first.out" "$out/raw/$tag-$tool.first.err")
-                base_items=$1
-                base_bytes=$2
-                break
-            fi
+            case " ${tool_list[*]} " in *" $tool "*) ;; *) continue ;; esac
+            set -- $(round1 "$tool")
+            base_items=$1
+            base_bytes=$2
+            break
         done
-        echo "| Tool | Items | Items − C | Bytes allocated | Bytes − C | Errors |"
-        echo "|---|---:|---:|---:|---:|---:|"
+        echo "| Tool | Items | Items − C | Bytes allocated | Bytes − C | Errors | Same in every run |"
+        echo "|---|---:|---:|---:|---:|---:|:-:|"
         for tool in "${tool_list[@]}"; do
-            [ -e "$out/raw/$tag-$tool.first.out" ] || continue
-            set -- $(totals "$tool" "$out/raw/$tag-$tool.first.out" "$out/raw/$tag-$tool.first.err")
+            set -- $(round1 "$tool")
             note=
             [ "$tool" = du ] && note=" (KB × 1024)"
             [ "$tool" = find ] && note=" (lines − 1)"
-            echo "$tool$note $1 $2 $3 $base_items $base_bytes" | awk '{
-                n = NF; tool = $1; for (i = 2; i <= n - 5; i++) tool = tool " " $i
-                items = $(n - 4); bytes = $(n - 3); errors = $(n - 2); bi = $(n - 1); bb = $n
+            [ "$tool" = scan ] && note=" (first run)"
+            echo "$tool$note $1 $2 $3 $base_items $base_bytes $(steady "$tool")" | awk '{
+                n = NF; tool = $1; for (i = 2; i <= n - 6; i++) tool = tool " " $i
+                items = $(n - 5); bytes = $(n - 4); errors = $(n - 3); bi = $(n - 2); bb = $(n - 1)
                 di = (items == "-" || bi == "-") ? "" : items - bi
                 db = (bytes == "-" || bb == "-") ? "" : bytes - bb
-                printf "| %s | %s | %s | %s | %s | %s |\n", tool, items, di, bytes, db, errors
+                printf "| %s | %s | %s | %s | %s | %s | %s |\n", tool, items, di, bytes, db, errors, $n
             }'
         done
         echo
-        echo "Totals come from each tool's first run. Item counts exclude the root folder;" \
-            "find prints it, so its line count is reduced by one. du -k prints 1024-byte units." \
-            "Errors are folders a tool couldn't read: its own count, or stderr lines for du and find."
+        echo "Totals come from measured round 1 (midden scan: its first run). Item counts exclude" \
+            "the root folder; find prints it, so its line count is reduced by one. du -k prints" \
+            "1024-byte units. Errors are folders a tool couldn't read: its own count, or stderr" \
+            "lines for du and find. \"Same in every run\" says whether a tool's totals changed" \
+            "between its measured runs, which happens when the folder itself changes."
         if [ -e "$out/raw/$tag-engine.first.out" ]; then
             json=$(tr ' ' '\n' <"$out/raw/$tag-engine.first.out" | awk -F= '
                 $1 == "json_seconds" { s = $2 } $1 == "json_bytes" { b = $2 }
