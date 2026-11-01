@@ -115,12 +115,14 @@ enum Command {
         run(arguments, environment: extra, timeout: timeout, waitpid: Darwin.waitpid)
     }
 
-    /// `run` with waitpid(2) replaceable, so tests can simulate a child
-    /// that never exits or a status that can't be read.
+    /// `run` with waitpid(2) and the budget of children replaceable, so
+    /// tests can simulate a child that never exits or a status that can't
+    /// be read, and fill a budget without touching the shared one.
     static func run(
         _ arguments: [String],
         environment extra: [String: String],
         timeout: TimeInterval,
+        children: CommandChildren = .shared,
         waitpid: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t
     ) -> CommandResult {
         guard let tool = arguments.first,
@@ -128,13 +130,31 @@ enum Command {
         else {
             return CommandResult(status: -1, output: "", error: "\(arguments.first ?? "") isn't installed.")
         }
+        // A monotonic deadline: the wall clock can jump. It covers the wait
+        // for a slot too.
+        let deadline = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + UInt64(max(timeout, 0) * 1e9)
+
+        // A slot for the child, reserved before anything is started and held
+        // until the child is reaped: running and lingering children together
+        // never exceed the limit.
+        guard children.reserve(until: deadline) else {
+            return CommandResult(
+                status: -1, output: "",
+                error: "\(children.limit) commands are already running or haven't exited after being stopped, so \(tool) wasn't started.")
+        }
 
         var outputPipe: [Int32] = [-1, -1]
         var errorPipe: [Int32] = [-1, -1]
-        guard pipe(&outputPipe) == 0 else { return failure(errno) }
+        guard pipe(&outputPipe) == 0 else {
+            let code = errno
+            children.release()
+            return failure(code)
+        }
         guard pipe(&errorPipe) == 0 else {
+            let code = errno
             close(outputPipe[0]); close(outputPipe[1])
-            return failure(errno)
+            children.release()
+            return failure(code)
         }
 
         var actions: posix_spawn_file_actions_t?
@@ -150,7 +170,6 @@ enum Command {
         // process group, so a timeout can stop everything it started.
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETPGROUP))
         posix_spawnattr_setpgroup(&attributes, 0)
-        reapLeftovers()
 
         let environment = Self.environment(
             inherited: ProcessInfo.processInfo.environment,
@@ -169,6 +188,7 @@ enum Command {
         guard spawned == 0 else {
             close(outputPipe[0])
             close(errorPipe[0])
+            children.release()
             return failure(spawned)
         }
 
@@ -178,8 +198,6 @@ enum Command {
             pollfd(fd: outputPipe[0], events: Int16(POLLIN), revents: 0),
             pollfd(fd: errorPipe[0], events: Int16(POLLIN), revents: 0),
         ]
-        // A monotonic deadline: the wall clock can jump.
-        let deadline = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + UInt64(max(timeout, 0) * 1e9)
         func secondsLeft() -> Double {
             let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
             return now >= deadline ? 0 : Double(deadline - now) / 1e9
@@ -220,11 +238,12 @@ enum Command {
         // Nor does a killed child get waited for without limit: SIGKILL
         // doesn't end a process stuck in the kernel. Every wait here is
         // nonblocking; a child still there `exitGrace` after the kill is
-        // left for reapLeftovers() and the command fails.
+        // handed to `children`, with its slot, to be reaped when it exits,
+        // and the command fails.
         var status: Int32 = 0
         var reaped = false
         var statusUnknown = false
-        var lingering = false
+        var leftBehind = false
         while true {
             let result = waitpid(pid, &status, WNOHANG)
             if result == pid {
@@ -241,17 +260,23 @@ enum Command {
             if !killed, now >= deadline {
                 stop()
             } else if killed, now >= stoppedAt + UInt64(Self.exitGrace * 1e9) {
-                lingering = true
-                leftovers.withLock { $0.append(pid) }
+                leftBehind = true
                 break
             }
             usleep(5_000)
+        }
+        if leftBehind {
+            // The slot goes with it, without a gap, until it's reaped.
+            children.handOver(pid)
+        } else {
+            // Reaped here, or no longer our child: either way it's gone.
+            children.release()
         }
         // WIFEXITED / WEXITSTATUS, which Swift doesn't import. An unknown
         // status is a failure, never a success.
         let exited = reaped && status & 0x7f == 0
         var error = String(decoding: collected[1], as: UTF8.self)
-        if lingering { error = "It didn't exit after being stopped. " + error }
+        if leftBehind { error = "It didn't exit after being stopped. " + error }
         if statusUnknown { error = "Couldn't read its exit status. " + error }
         if killed { error = "Timed out after \(Int(timeout)) seconds. " + error }
         return CommandResult(
@@ -262,21 +287,6 @@ enum Command {
 
     /// How long a killed command gets to exit before run() stops waiting.
     static let exitGrace: TimeInterval = 2
-
-    /// Killed children that hadn't exited when run() returned. Reaped
-    /// without blocking at the start of every later run(), so no thread
-    /// waits on them and they don't stay zombies once they exit.
-    private static let leftovers = Mutex<[pid_t]>([])
-
-    private static func reapLeftovers() {
-        leftovers.withLock { pids in
-            pids.removeAll { pid in
-                var status: Int32 = 0
-                let result = Darwin.waitpid(pid, &status, WNOHANG)
-                return result == pid || (result < 0 && errno == ECHILD)
-            }
-        }
-    }
 
     /// Inherited variables that never reach a command. They choose which
     /// repository, work tree, index or object store git works on, or add
@@ -306,5 +316,91 @@ enum Command {
 
     private static func failure(_ code: Int32) -> CommandResult {
         CommandResult(status: -1, output: "", error: String(cString: strerror(code)))
+    }
+}
+
+/// Slots for the processes Command.run starts, shared by every run given
+/// the same value (by default the whole process). A slot is reserved
+/// atomically before a command is spawned and held until its process is
+/// reaped, or known not to be this process's child any more. A killed
+/// command that hasn't exited keeps its slot: it's handed to an exit watch
+/// that reaps it whenever it exits, without a thread waiting on it and
+/// without needing another command to run. So running plus lingering
+/// children never exceed `limit`.
+final class CommandChildren: Sendable {
+    /// Watches a lingering child and calls `reaped` once it has been reaped.
+    typealias Watch = @Sendable (_ pid: pid_t, _ reaped: @escaping @Sendable () -> Void) -> Void
+
+    let limit: Int
+    private let watch: Watch
+    private struct State {
+        var held = 0
+        var highWater = 0
+        var lingering = 0
+    }
+    private let state = Mutex(State())
+
+    static let shared = CommandChildren(limit: 32)
+
+    init(limit: Int, watch: @escaping Watch = CommandChildren.watchExit) {
+        self.limit = limit
+        self.watch = watch
+    }
+
+    var held: Int { state.withLock { $0.held } }
+    var lingering: Int { state.withLock { $0.lingering } }
+    /// The most slots held at once, for tests.
+    var highWater: Int { state.withLock { $0.highWater } }
+
+    /// Takes a slot, waiting until `deadline` (CLOCK_MONOTONIC_RAW ns) for
+    /// one at most.
+    func reserve(until deadline: UInt64) -> Bool {
+        while true {
+            let reserved = state.withLock { state in
+                guard state.held < limit else { return false }
+                state.held += 1
+                state.highWater = max(state.highWater, state.held)
+                return true
+            }
+            if reserved { return true }
+            if clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) >= deadline { return false }
+            usleep(5_000)
+        }
+    }
+
+    /// The child was reaped, never started, or isn't ours any more.
+    func release() {
+        state.withLock { $0.held -= 1 }
+    }
+
+    /// The child is still there after being killed: its slot stays taken
+    /// until the watch reports it reaped.
+    func handOver(_ pid: pid_t) {
+        state.withLock { $0.lingering += 1 }
+        watch(pid) { [self] in
+            state.withLock { state in
+                state.lingering -= 1
+                state.held -= 1
+            }
+        }
+    }
+
+    /// Reaps `pid` when it exits, from a dispatch process source.
+    static let watchExit: Watch = { pid, reaped in
+        let source = DispatchSource.makeProcessSource(
+            identifier: pid, eventMask: .exit, queue: .global(qos: .utility))
+        let once = Mutex(false)
+        let reapIfExited: @Sendable () -> Void = {
+            var status: Int32 = 0
+            let result = waitpid(pid, &status, WNOHANG)
+            guard result == pid || (result < 0 && errno == ECHILD) else { return }
+            guard once.withLock({ done in defer { done = true }; return !done }) else { return }
+            source.cancel()
+            reaped()
+        }
+        source.setEventHandler(handler: reapIfExited)
+        source.resume()
+        // It may have exited before the source was armed.
+        reapIfExited()
     }
 }

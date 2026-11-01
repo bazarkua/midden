@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import MiddenCore
 
@@ -103,5 +104,136 @@ import Testing
         #expect(result.succeeded)
         #expect(result.output == "out\n")
         #expect(result.error == "err\n")
+    }
+}
+
+private final class Tally: Sendable {
+    private let value = Mutex(0)
+    func add() { value.withLock { $0 += 1 } }
+    var count: Int { value.withLock { $0 } }
+}
+
+/// Runs `body` on `count` threads at once and waits for all of them.
+private func concurrently(_ count: Int, _ body: @escaping @Sendable (Int) -> Void) {
+    let done = DispatchGroup()
+    for index in 0..<count {
+        done.enter()
+        Thread {
+            body(index)
+            done.leave()
+        }.start()
+    }
+    done.wait()
+}
+
+@Suite struct CommandChildrenTests {
+    private let waitpid: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { Darwin.waitpid($0, $1, $2) }
+
+    /// Two commands hold a budget of two. Four more, started at the same
+    /// time with a short deadline, all wait for a slot, get none, and start
+    /// nothing; the budget never goes past two; and it's free again once
+    /// the first two exit.
+    @Test func concurrentCommandsStayWithinATinyBudget() throws {
+        let dir = try TempDir()
+        let children = CommandChildren(limit: 2)
+        let holders = Tally()
+        Thread {
+            concurrently(2) { _ in
+                _ = Command.run(
+                    ["/bin/sleep", "1.5"], environment: [:], timeout: 10, children: children,
+                    waitpid: { Darwin.waitpid($0, $1, $2) })
+                holders.add()
+            }
+        }.start()
+        let started = Date(timeIntervalSinceNow: 5)
+        while children.held < 2, Date() < started { Thread.sleep(forTimeInterval: 0.005) }
+        try #require(children.held == 2)
+
+        let refused = Tally()
+        let root = dir.path
+        concurrently(4) { index in
+            let result = Command.run(
+                ["/usr/bin/touch", root + "/ran-\(index)"], environment: [:], timeout: 0.3, children: children,
+                waitpid: { Darwin.waitpid($0, $1, $2) })
+            if !result.succeeded, result.error.contains("already running") { refused.add() }
+        }
+        #expect(refused.count == 4)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).isEmpty)
+        #expect(children.highWater == 2)
+
+        let exited = Date(timeIntervalSinceNow: 10)
+        while holders.count < 2, Date() < exited { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(children.held == 0)
+        let after = Command.run(["/usr/bin/true"], environment: [:], timeout: 5, children: children, waitpid: waitpid)
+        #expect(after.succeeded)
+    }
+
+    /// A command that can't be launched gives its slot back.
+    @Test func aLaunchFailureGivesTheSlotBack() {
+        let children = CommandChildren(limit: 1)
+        let failed = Command.run(
+            ["/nonexistent/tool"], environment: [:], timeout: 5, children: children, waitpid: waitpid)
+        #expect(!failed.succeeded)
+        #expect(children.held == 0)
+        let next = Command.run(["/usr/bin/true"], environment: [:], timeout: 5, children: children, waitpid: waitpid)
+        #expect(next.succeeded)
+    }
+
+    /// A killed command that hasn't exited keeps its slot, handed over
+    /// without a gap, until it's reaped; meanwhile nothing else starts.
+    @Test func aLingeringChildKeepsItsSlotUntilReaped() throws {
+        let dir = try TempDir()
+        let pending = Mutex<(pid: pid_t, reaped: (@Sendable () -> Void)?)>((0, nil))
+        let children = CommandChildren(limit: 1) { pid, reaped in
+            pending.withLock { $0 = (pid, reaped) }
+        }
+        // run() never sees it exit, so it hands the child over.
+        let neverExits: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { _, _, _ in 0 }
+        let lingering = Command.run(
+            ["/bin/sleep", "30"], environment: [:], timeout: 0.2, children: children, waitpid: neverExits)
+        #expect(lingering.error.contains("didn't exit"), "\(lingering.error)")
+        #expect(children.held == 1)
+        #expect(children.lingering == 1)
+
+        let marker = dir.path("ran")
+        let refused = Command.run(
+            ["/usr/bin/touch", marker], environment: [:], timeout: 0.3, children: children, waitpid: waitpid)
+        #expect(!refused.succeeded)
+        #expect(!FileManager.default.fileExists(atPath: marker))
+
+        // Reap it here, as the watch would, and report it.
+        let (pid, reaped) = pending.withLock { $0 }
+        var status: Int32 = 0
+        #expect(Darwin.waitpid(pid, &status, 0) == pid)
+        let report = try #require(reaped)
+        report()
+        #expect(children.held == 0)
+        #expect(children.lingering == 0)
+        let allowed = Command.run(
+            ["/usr/bin/touch", marker], environment: [:], timeout: 5, children: children, waitpid: waitpid)
+        #expect(allowed.succeeded)
+        #expect(FileManager.default.fileExists(atPath: marker))
+    }
+
+    /// The default watch reaps a lingering child as soon as it exits,
+    /// without another command running, and leaves no zombie.
+    @Test func theDefaultWatchReapsALingeringChild() throws {
+        let children = CommandChildren(limit: 4)
+        let child = Mutex<pid_t>(0)
+        let neverExits: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { pid, _, _ in
+            child.withLock { $0 = pid }
+            return 0
+        }
+        let result = Command.run(
+            ["/bin/sleep", "30"], environment: [:], timeout: 1, children: children, waitpid: neverExits)
+        #expect(result.error.contains("didn't exit"), "\(result.error)")
+        let pid = child.withLock { $0 }
+        try #require(pid > 0)
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while children.held > 0 || kill(pid, 0) == 0, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        #expect(children.held == 0)
+        #expect(kill(pid, 0) == -1 && errno == ESRCH)
     }
 }
