@@ -197,7 +197,9 @@ The tests cover:
 
 ## Known limits
 
-- Between the last check and the delete there is a small window. Nothing locks the folder in between.
+- Between the last check and the delete there is a window of a few system calls. Right before acting, the cleaner checks the path again (no symlink at or above it, the same kind of object, no disk mounted inside), which closed the long window during the size walk and the audit. `CleanerRaceTests` changes the file system at four stages of cleaning (before the path is opened, before it's classified, after validation, right before the delete). Four changes made at the last stage still win, and are marked as known issues: an ancestor swapped for a symlink, the folder of `removeContents` swapped for one, the item replaced by a file, and the folder of an installer swapped before it's moved to the Trash. Every other case is safe at every stage.
+
+  The fix is a delete through descriptors instead of paths. Open each component from home with `openat(O_NOFOLLOW | O_DIRECTORY)`, check device and inode with `fstat` against what validation recorded, and delete with `unlinkat` relative to the descriptors held, never by path again. A short-lived approval record would carry the identity, the rule, the action and the safety level the user approved from plan to clean, and the cleaner would refuse when any of them changed or the safety got worse. Git and simctl removals stay delegated to their tools, with the same identity check right before.
 - The running-app check matches by bundle id or display name, so it can miss an app whose process name is different.
 - Build folders don't check for a dev server running in the project yet.
 - The watchdog is tested with an injected blocking reader. A real privacy prompt could not be triggered on the test Mac.

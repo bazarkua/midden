@@ -113,6 +113,8 @@ public struct Cleaner: Sendable {
     public var home: URL
     /// Replaces moving to the Trash, so tests never touch the user's Trash.
     var trash: (@Sendable (String) throws -> Void)?
+    /// Lets tests change the file system at a chosen stage of cleaning.
+    var barrier: (@Sendable (CleanStage, String) -> Void)?
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.home = home
@@ -121,6 +123,7 @@ public struct Cleaner: Sendable {
     private func makeEngine() throws -> CleanEngine {
         var engine = try CleanEngine(home: home)
         if let trash { engine.trash = trash }
+        if let barrier { engine.barrier = barrier }
         return engine
     }
 

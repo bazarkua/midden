@@ -11,6 +11,21 @@ public struct CleanPlan: Sendable, Hashable {
     public var isApproved: Bool { refusal == nil && finding != nil }
 }
 
+/// Moments in cleaning one item where a test can change the file system.
+/// The names follow the planned transaction design (open the item through
+/// descriptors, claim its identity, validate, delete relative to the
+/// descriptors); today's engine calls them at the matching points:
+enum CleanStage: Sendable, CaseIterable {
+    /// Before the path is first looked at.
+    case beforeOpen
+    /// After the path checks (canonical, no symlink), before it's classified.
+    case beforeClaim
+    /// After it's classified, sized and audited: validation is done.
+    case afterClaim
+    /// Right before the call that deletes, moves or runs the removal.
+    case beforeDelete
+}
+
 /// Re-validates each id the way the scanner would classify it, then performs
 /// its action. Nothing from an earlier scan is trusted: not the path, not the
 /// verdict, not the action.
@@ -22,6 +37,9 @@ struct CleanEngine {
     var trash: @Sendable (String) throws -> Void = { path in
         try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
     }
+    /// Called at each stage of cleaning a file-system item, so tests can
+    /// change the file system at exactly that moment.
+    var barrier: @Sendable (CleanStage, String) -> Void = { _, _ in }
 
     init(home: URL) throws {
         self.home = try System.canonicalPath(home.path)
@@ -79,6 +97,7 @@ struct CleanEngine {
             case .success(let found): finding = found
             case .failure(let refusal): return .failure(refusal)
             }
+            barrier(.afterClaim, id)
         }
         if case .manual(let instructions) = finding.action {
             return refuse("Midden doesn't delete this itself. \(instructions)", finding)
@@ -92,6 +111,37 @@ struct CleanEngine {
         return .success(finding)
     }
 
+    /// Why `path` can't be acted on as it is, or nil: it must exist, not be
+    /// a symlink, and have no symlink above it (`realpath` gives it back
+    /// unchanged), e.g. ~/link/Caches/x.
+    static func pathRefusal(_ path: String) -> String? {
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            return errno == ENOENT ? "It no longer exists." : String(cString: strerror(errno))
+        }
+        if info.st_mode & S_IFMT == S_IFLNK {
+            return "It's a symbolic link."
+        }
+        guard (try? System.canonicalPath(path)) == path else {
+            return "Its path goes through a symbolic link."
+        }
+        return nil
+    }
+
+    /// A folder action needs a folder there, a file action a regular file:
+    /// something put in the item's place since validation isn't it.
+    static func kindRefusal(_ finding: Finding) -> String? {
+        let expected: mode_t
+        switch finding.action {
+        case .removeDirectory, .removeContents: expected = S_IFDIR
+        case .removeFile, .moveToTrash: expected = S_IFREG
+        case .run, .manual: return nil
+        }
+        var info = stat()
+        guard lstat(finding.path, &info) == 0 else { return "It no longer exists." }
+        return info.st_mode & S_IFMT == expected ? nil : "It changed since Midden checked it."
+    }
+
     private func fileSystemItem(_ path: String) -> Result<Finding, Refusal> {
         // The id must already be the canonical absolute path the scanner
         // reports: no `.` or `..` components, no doubled or trailing slashes.
@@ -103,17 +153,9 @@ struct CleanEngine {
         guard path.hasPrefix(home + "/") else {
             return externalWorktree(path)
         }
-        var info = stat()
-        guard lstat(path, &info) == 0 else {
-            return refuse(errno == ENOENT ? "It no longer exists." : String(cString: strerror(errno)))
-        }
-        if info.st_mode & S_IFMT == S_IFLNK {
-            return refuse("It's a symbolic link.")
-        }
-        // Catches a symlink anywhere above it, e.g. ~/link/Caches/x.
-        guard (try? System.canonicalPath(path)) == path else {
-            return refuse("Its path goes through a symbolic link.")
-        }
+        barrier(.beforeOpen, path)
+        if let refusal = Self.pathRefusal(path) { return refuse(refusal) }
+        barrier(.beforeClaim, path)
 
         let relative = path.dropFirst(home.count + 1).split(separator: "/").map(String.init)
         let reader = DirectoryReader()
@@ -217,8 +259,16 @@ struct CleanEngine {
 
     /// Returns nil on success, else what went wrong.
     func perform(_ finding: Finding) -> String? {
-        // A disk may have been mounted since the item was validated.
-        if let refusal = volumeRefusal(finding) { return refusal }
+        if case .manual = finding.action {} else {
+            // Validation sized and audited the item, which can take a while:
+            // a symlink swapped in above it meanwhile, or a disk mounted in
+            // it, must not redirect what follows. This narrows the window to
+            // the next few calls; it doesn't close it (see ARCHITECTURE.md).
+            if let refusal = Self.pathRefusal(finding.path) { return refusal }
+            if let refusal = Self.kindRefusal(finding) { return refusal }
+            if let refusal = volumeRefusal(finding) { return refusal }
+            barrier(.beforeDelete, finding.path)
+        }
         let fileManager = FileManager.default
         switch finding.action {
         case .manual(let instructions):
