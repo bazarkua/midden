@@ -307,6 +307,10 @@ public struct ScanReport: Codable, Sendable {
     /// Folders that failed to list (permissions, I/O errors), or whose
     /// listing stopped making progress and was given up.
     public var readErrors: Int
+    /// Which privacy-protected folders were skipped for lack of Full Disk
+    /// Access, relative to home and outermost first: "Desktop", "Documents",
+    /// "Library/Mail". Lets a front end say what the scan left out.
+    public var skippedFolders: [String]
 
     public init(
         home: String,
@@ -321,7 +325,8 @@ public struct ScanReport: Codable, Sendable {
         needsFullDiskAccess: Bool,
         spaceMap: SpaceNode? = nil,
         skippedWithoutFullDiskAccess: Int = 0,
-        readErrors: Int = 0
+        readErrors: Int = 0,
+        skippedFolders: [String] = []
     ) {
         self.home = home
         self.startedAt = startedAt
@@ -336,6 +341,7 @@ public struct ScanReport: Codable, Sendable {
         self.spaceMap = spaceMap
         self.skippedWithoutFullDiskAccess = skippedWithoutFullDiskAccess
         self.readErrors = readErrors
+        self.skippedFolders = skippedFolders
     }
 
     /// Also reads reports saved before the newer fields existed.
@@ -355,6 +361,7 @@ public struct ScanReport: Codable, Sendable {
         skippedWithoutFullDiskAccess =
             try container.decodeIfPresent(Int.self, forKey: .skippedWithoutFullDiskAccess) ?? 0
         readErrors = try container.decodeIfPresent(Int.self, forKey: .readErrors) ?? unreadableCount
+        skippedFolders = try container.decodeIfPresent([String].self, forKey: .skippedFolders) ?? []
     }
 
     /// Bytes Midden could free for a given safety level.

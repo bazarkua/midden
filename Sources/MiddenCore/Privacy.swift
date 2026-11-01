@@ -6,10 +6,26 @@ import Foundation
 /// unreadable, instead of finding out one blocked call at a time (the
 /// walker's watchdog still catches anything this list misses).
 ///
-/// The list is every folder `du` couldn't read on a Mac without Full Disk
-/// Access (macOS 27), plus the Photos and Music libraries.
+/// Two kinds: folders macOS refuses silently (every folder `du` couldn't
+/// read on a Mac without Full Disk Access, macOS 27), and folders macOS asks
+/// about with a prompt. A scan that opened the second kind would pop up one
+/// permission dialog per folder, so without Full Disk Access it leaves them
+/// alone and says so instead.
 enum PrivacyProtected {
-    /// Paths relative to the home folder.
+    /// Folders macOS asks about with a permission prompt, relative to home:
+    /// Files and Folders (Desktop, Documents, Downloads), iCloud Drive, and
+    /// the Music and TV media libraries. Other apps' containers prompt too;
+    /// `skipped(in:entries:)` handles those.
+    static let prompting: Set<String> = [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Library/Mobile Documents",
+        "Movies/TV",
+        "Music",
+    ]
+
+    /// Folders macOS refuses without a prompt, relative to home.
     static let folders: Set<String> = [
         ".Trash",
         "Library/Accounts",
@@ -64,7 +80,6 @@ enum PrivacyProtected {
         "Library/Caches/com.apple.Safari.SafeBrowsing",
         "Library/Caches/FamilyCircle",
         "Library/Caches/familycircled",
-        "Music/Music",
         "Pictures/Photo Booth Library",
     ]
 
@@ -76,16 +91,17 @@ enum PrivacyProtected {
             guard entry.kind == .directory else { return nil }
             let name = entry.name
             switch relative {
-            // Other apps' data: 147 of 149 group containers, and 329 of 338
-            // protected containers were Apple's (the rest of Apple's held 1.7 MB).
-            case ["Library", "Group Containers"]:
-                return name
-            case ["Library", "Containers"] where name.hasPrefix("com.apple."):
+            // Other apps' data. 147 of 149 group containers, and 329 of 338
+            // refused containers were Apple's; since macOS 14 reading any
+            // other app's container can also ask for permission, so all of
+            // them wait for Full Disk Access.
+            case ["Library", "Group Containers"], ["Library", "Containers"]:
                 return name
             case ["Pictures"] where name.lowercased().hasSuffix(".photoslibrary"):
                 return name
             default:
-                return folders.contains(prefix + name) ? name : nil
+                let path = prefix + name
+                return folders.contains(path) || prompting.contains(path) ? name : nil
             }
         }
     }

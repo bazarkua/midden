@@ -161,7 +161,8 @@ struct ScanEngine {
                 walk.spaceRecords, root: home, findings: findings, aliases: aliases,
                 floor: WalkDefaults.mapFloor),
             skippedWithoutFullDiskAccess: walk.skipped,
-            readErrors: walk.readErrors)
+            readErrors: walk.readErrors,
+            skippedFolders: delegate.skippedFolders)
     }
 }
 

@@ -24,11 +24,21 @@ final class ScanDelegate: WalkDelegate {
     let skipProtected: Bool
     private let fileHits = Mutex<[FileHit]>([])
     private let repositories = Mutex<[String]>([])
+    private let skippedPaths = Mutex<[String]>([])
 
     var files: [FileHit] { fileHits.withLock { $0 } }
 
     /// `.git` folders that list linked worktrees, wherever the walk saw them.
     var gitDirectories: [String] { repositories.withLock { $0 } }
+
+    /// Protected folders skipped for lack of Full Disk Access, relative to
+    /// home: outermost first, then by name.
+    var skippedFolders: [String] {
+        skippedPaths.withLock { $0 }.sorted { lhs, rhs in
+            let depths = (lhs.split(separator: "/").count, rhs.split(separator: "/").count)
+            return depths.0 != depths.1 ? depths.0 < depths.1 : lhs < rhs
+        }
+    }
 
     init(skipProtected: Bool = false) {
         self.skipProtected = skipProtected
@@ -36,7 +46,12 @@ final class ScanDelegate: WalkDelegate {
 
     private func protectedFolders(in relative: [String]?, _ entries: [DirectoryEntry]) -> [String] {
         guard skipProtected, let relative else { return [] }
-        return PrivacyProtected.skipped(in: relative, entries: entries)
+        let names = PrivacyProtected.skipped(in: relative, entries: entries)
+        if !names.isEmpty {
+            let prefix = relative.isEmpty ? "" : relative.joined(separator: "/") + "/"
+            skippedPaths.withLock { $0.append(contentsOf: names.map { prefix + $0 }) }
+        }
+        return names
     }
 
     func rootContext() -> Context {
