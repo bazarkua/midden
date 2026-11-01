@@ -62,6 +62,8 @@ final class WalkerThreads: Sendable {
     private struct State {
         var held = 0
         var highWater = 0
+        /// Calls of admit() waiting for a slot, for tests.
+        var waiting = 0
         /// Folder path -> abandoned listings of it that haven't returned.
         var abandoned: [String: Int] = [:]
     }
@@ -74,9 +76,14 @@ final class WalkerThreads: Sendable {
     }
 
     /// Takes a slot if one is free, waiting up to `wait` seconds for one.
-    func admit(waitingUpTo wait: TimeInterval = 0) -> Bool {
+    /// Never takes one once `cancellation` is set, and stops waiting then:
+    /// the check comes before every attempt to reserve.
+    func admit(waitingUpTo wait: TimeInterval = 0, cancellation: CancellationFlag? = nil) -> Bool {
         let deadline = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + UInt64(max(wait, 0) * 1e9)
+        var counted = false
+        defer { if counted { state.withLock { $0.waiting -= 1 } } }
         while true {
+            if cancellation?.isCancelled == true { return false }
             let admitted = state.withLock { state in
                 guard state.held < limit else { return false }
                 state.held += 1
@@ -85,9 +92,15 @@ final class WalkerThreads: Sendable {
             }
             if admitted { return true }
             if clock_gettime_nsec_np(CLOCK_UPTIME_RAW) >= deadline { return false }
+            if !counted {
+                counted = true
+                state.withLock { $0.waiting += 1 }
+            }
             usleep(5_000)
         }
     }
+
+    var waiting: Int { state.withLock { $0.waiting } }
 
     /// A thread that held a slot exited.
     func release() {
@@ -240,6 +253,9 @@ struct WalkResult<Mark: Sendable> {
     var marked: [SizedDirectory<Mark>]
     /// The root, with the sizes of its immediate children.
     var root: SizedDirectory<Mark>?
+    /// The walk was cancelled: its totals are partial, and that isn't a
+    /// read error or a stalled root.
+    var cancelled = false
 }
 
 /// How far a walk is, reported a few times per second.
@@ -329,7 +345,9 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         // first one waits up to the stall timeout for a slot: other walks'
         // running threads give theirs back when those walks end. If stuck
         // threads hold every slot, none comes, and the walk doesn't start:
-        // everything counts as unreadable, the root included.
+        // everything counts as unreadable, the root included. Cancelling
+        // stops the wait at once, and a cancelled walk starts nothing; that
+        // isn't a stalled root, so nothing is counted as unreadable.
         var started = 0
         while started < threadCount,
             startWorker(
@@ -339,7 +357,11 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             started += 1
         }
         if started == 0 {
-            queue.drain { failed($0, code: ETIMEDOUT) }
+            if cancellation.isCancelled {
+                queue.drain { _ in }
+            } else {
+                queue.drain { failed($0, code: ETIMEDOUT) }
+            }
         }
         supervise(device: device, cancellation: cancellation, progress: progress)
         // A thread still stuck in a listing references this walker; it
@@ -356,7 +378,8 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             stalled: stalled.withLock { $0 },
             spaceRecords: spaceRecords.withLock { $0 },
             marked: marked.withLock { $0 },
-            root: rootRecord.withLock { $0 })
+            root: rootRecord.withLock { $0 },
+            cancelled: cancellation.isCancelled)
     }
 
     private func releaseCollected() {
@@ -375,7 +398,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         progress: @escaping @Sendable (WalkProgress) -> Void,
         waitingUpTo wait: TimeInterval = 0
     ) -> Bool {
-        guard threads.admit(waitingUpTo: wait) else { return false }
+        guard threads.admit(waitingUpTo: wait, cancellation: cancellation) else { return false }
         let worker = Worker()
         let index = workers.withLock { workers in
             workers.append(worker)
@@ -429,10 +452,12 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
                     replaced += 1
                 } else if workers.withLock({ $0.allSatisfy(\.isAbandoned) }) {
                     // No thread left to list anything: what's still queued
-                    // is counted as unreadable rather than waited for.
+                    // is counted as unreadable rather than waited for, unless
+                    // the walk was cancelled, which reads nothing more anyway.
+                    let cancelled = cancellation.isCancelled
                     queue.drain { queued in
                         queued.state.store(Node.givenUp, ordering: .releasing)
-                        failed(queued, code: ETIMEDOUT)
+                        if !cancelled { failed(queued, code: ETIMEDOUT) }
                     }
                 }
             }

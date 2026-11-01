@@ -201,6 +201,78 @@ private final class WeakRecord {
         #expect(budget.highWater <= 2)
     }
 
+    /// Every slot is held by another walk's stuck thread. A walk waiting
+    /// for a slot, with a 60-second stall timeout, returns as soon as it's
+    /// cancelled: it lists nothing, takes no slot and frees none of the
+    /// held ones. One cancelled before it starts doesn't wait at all.
+    @Test func cancellingAWalkWaitingForASlotReturnsPromptly() throws {
+        let dir = try TempDir()
+        try dir.write("blocked/file.bin", bytes: 1_000)
+        let blocked = dir.path("blocked")
+        let gate = Gate()
+        defer { gate.open() }
+        let budget = WalkerThreads(limit: 1)
+        // Walk A: its only thread blocks, is given up, and keeps the slot.
+        let first = try Walker(
+            root: dir.path, delegate: SizeOnly(), threadCount: 1, stallTimeout: 0.05, threads: budget
+        ) { path, reader throws(POSIXError) in
+            if path == blocked { gate.wait() }
+            return try reader.listing(atPath: path)
+        }.run()
+        #expect(first.stalled == [blocked])
+        #expect(budget.held == 1)
+
+        let listed = Counter()
+        let root = dir.path
+        func waitingWalk(_ flag: CancellationFlag) -> Walker<SizeOnly> {
+            Walker(root: root, delegate: SizeOnly(), threadCount: 2, stallTimeout: 60, threads: budget) {
+                path, reader throws(POSIXError) in
+                listed.increment()
+                return try reader.listing(atPath: path)
+            }
+        }
+
+        // Walk B waits for admission; cancel it once it does.
+        let flag = CancellationFlag()
+        let outcome = Mutex<(result: WalkResult<Never>?, returned: Date?)>((nil, nil))
+        Thread {
+            let result = try? waitingWalk(flag).run(cancellation: flag)
+            outcome.withLock { $0 = (result, Date()) }
+        }.start()
+        let waitDeadline = Date(timeIntervalSinceNow: 5)
+        while budget.waiting == 0, Date() < waitDeadline { Thread.sleep(forTimeInterval: 0.005) }
+        try #require(budget.waiting == 1, "the walk never waited for a slot")
+        let cancelled = Date()
+        flag.cancel()
+        let returnDeadline = Date(timeIntervalSinceNow: 5)
+        while outcome.withLock({ $0.returned }) == nil, Date() < returnDeadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        let (result, returned) = outcome.withLock { $0 }
+        let elapsed = try #require(returned, "the cancelled walk didn't return").timeIntervalSince(cancelled)
+        #expect(elapsed < 0.5, "\(elapsed) s after cancel")
+        #expect(result?.cancelled == true)
+        #expect(result?.rootError == nil)
+        #expect(result?.readErrors == 0)
+
+        // Walk C: cancelled before it starts.
+        let already = CancellationFlag()
+        already.cancel()
+        let started = Date()
+        let early = try waitingWalk(already).run(cancellation: already)
+        #expect(Date().timeIntervalSince(started) < 0.5)
+        #expect(early.cancelled)
+        #expect(early.rootError == nil)
+
+        #expect(listed.count == 0)
+        #expect(budget.held == 1)
+        #expect(budget.waiting == 0)
+        gate.open()
+        let drained = Date(timeIntervalSinceNow: 5)
+        while budget.held > 0, Date() < drained { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(budget.held == 0)
+    }
+
     /// The listing returns in the gap between the watchdog giving it up and
     /// registering it as abandoned. It must not stay registered: that would
     /// make every later scan skip a folder that reads fine.
