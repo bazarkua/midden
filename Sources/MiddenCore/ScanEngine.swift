@@ -10,13 +10,27 @@ struct ScanEngine {
         cancellation: CancellationFlag
     ) throws -> ScanReport {
         let started = Date()
-        let home = try System.canonicalPath(options.home.path)
+        let home: String
+        do {
+            home = try System.canonicalPath(options.home.path)
+        } catch {
+            throw MiddenError.unreadable(path: options.home.path, code: error.code.rawValue)
+        }
         let delegate = ScanDelegate()
-        let walk = try Walker(
-            root: home, delegate: delegate,
-            threadCount: options.threadCount ?? WalkDefaults.threadCount
-        ).run(cancellation: cancellation, progress: progress)
+        let walk: WalkResult<DirectoryMatch>
+        do {
+            walk = try Walker(
+                root: home, delegate: delegate,
+                threadCount: options.threadCount ?? WalkDefaults.threadCount
+            ).run(cancellation: cancellation, progress: progress)
+        } catch {
+            throw MiddenError.unreadable(path: home, code: error.code.rawValue)
+        }
         if cancellation.isCancelled { throw MiddenError.cancelled }
+        // An empty report would read as "nothing to clean".
+        if let rootError = walk.rootError {
+            throw MiddenError.unreadable(path: home, code: rootError.code.rawValue)
+        }
 
         let now = Date()
         let minimum = options.minimumBytes

@@ -86,6 +86,8 @@ struct WalkResult<Mark: Sendable> {
     var items: Int64
     /// Directories that couldn't be listed (permissions, I/O errors).
     var unreadable: Int
+    /// Why the root itself couldn't be listed; nil when it could.
+    var rootError: POSIXError?
     /// Marked directories, in no particular order.
     var marked: [SizedDirectory<Mark>]
     /// The root, with the sizes of its immediate children.
@@ -114,6 +116,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     private let items = Atomic<Int64>(0)
     private let bytesSeen = Atomic<Int64>(0)
     private let unreadable = Atomic<Int>(0)
+    private let rootError = Atomic<Int32>(0)
     private let lastProgress = Atomic<UInt64>(0)
 
     init(root: String, delegate: Delegate, threadCount: Int = WalkDefaults.threadCount) {
@@ -160,6 +163,8 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             totalBytes: rootTotal.load(ordering: .acquiring),
             items: items.load(ordering: .relaxed),
             unreadable: unreadable.load(ordering: .relaxed),
+            rootError: rootError.load(ordering: .relaxed) == 0
+                ? nil : POSIXError(rootError.load(ordering: .relaxed)),
             marked: marked.withLock { $0 },
             root: rootRecord.withLock { $0 })
     }
@@ -196,6 +201,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             if ![ENOENT, ENOTDIR, EDEADLK].contains(error.code.rawValue) {
                 unreadable.add(1, ordering: .relaxed)
             }
+            if node.depth == 0 { rootError.store(error.code.rawValue, ordering: .relaxed) }
             if node.remaining.subtract(1, ordering: .acquiringAndReleasing).newValue == 0 {
                 complete(node, record: nil)
             }

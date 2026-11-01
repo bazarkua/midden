@@ -25,7 +25,23 @@ public struct ScanOptions: Sendable {
 
 public enum MiddenError: Error, Sendable {
     case notImplemented
+    /// The scanning task was cancelled.
     case cancelled
+    /// The folder to scan couldn't be read at all, usually for lack of
+    /// permission. `code` is the errno. Show "no access", never "nothing to
+    /// clean".
+    case unreadable(path: String, code: Int32)
+}
+
+extension MiddenError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .notImplemented: "Not implemented."
+        case .cancelled: "The scan was cancelled."
+        case .unreadable(let path, let code):
+            "Midden can't read \(path): \(String(cString: strerror(code)))."
+        }
+    }
 }
 
 public struct Scanner: Sendable {

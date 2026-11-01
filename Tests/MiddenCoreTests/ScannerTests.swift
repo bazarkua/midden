@@ -111,6 +111,26 @@ import Testing
         })
     }
 
+    @Test func unreadableHomeIsAnErrorNotAnEmptyReport() async throws {
+        let home = try TempDir("home")
+        try home.write("Library/Caches/com.example.fake/blob", bytes: 2_000_000)
+        chmod(home.path, 0o000)
+        defer { chmod(home.path, 0o755) }
+        await #expect(throws: MiddenError.self) {
+            try await Scanner(options: ScanOptions(home: home.url)).scan()
+        }
+        do {
+            _ = try await Scanner(options: ScanOptions(home: home.url)).scan()
+        } catch MiddenError.unreadable(let path, let code) {
+            #expect(path == home.path)
+            #expect(code == EACCES)
+        }
+        let missing = home.url.appendingPathComponent("does-not-exist")
+        await #expect(throws: MiddenError.self) {
+            try await Scanner(options: ScanOptions(home: missing)).scan()
+        }
+    }
+
     @Test func parsesSimctlOutput() throws {
         let json = """
             {"devices": {
