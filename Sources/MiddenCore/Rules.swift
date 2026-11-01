@@ -569,7 +569,8 @@ enum RuleCatalog {
             title: "Downloads", group: "Downloads",
             explanation: """
                 Files you downloaded. Midden doesn't delete your files, but lists large \
-                installers in here separately.
+                installers and build folders in here separately, and leaves them out of this \
+                size.
                 """,
             action: .manual("Sort the folder by size in Finder to find the big files you no longer need."),
             claimsSubtree: false),

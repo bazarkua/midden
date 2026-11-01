@@ -15,6 +15,7 @@ import Testing
         try home.write("Library/Logs/app.log", bytes: 1_100_000)
         try home.write("Downloads/Installer.dmg", bytes: 101_000_000)
         try home.write("Downloads/notes.txt", text: "hi")
+        try home.write("Downloads/archive.zip", bytes: 2_000_000)
         try home.write("Projects/old/package.json", text: "{}")
         try home.write("Projects/old/node_modules/dep/index.js", bytes: 2_000_000)
         try home.touch("Projects/old/package.json", daysAgo: 30)
@@ -208,7 +209,9 @@ import Testing
         #expect(files.count == 1)
         #expect(files.first?.path == original)
         #expect(files.first?.explanation.contains("Also at \(link).") == true)
-        let downloads = try #require(report.findings.first { $0.path == home.path("Downloads") })
-        #expect(downloads.bytes < 2 * 100_000_000)
+        // Counted once, and only by its own finding: Downloads leaves it out
+        // (and, holding nothing else, is too small to report).
+        let downloads = report.findings.first { $0.path == home.path("Downloads") }?.bytes ?? 0
+        #expect(downloads + (files.first?.bytes ?? 0) <= (try allocated(home.path("Downloads"))))
     }
 }

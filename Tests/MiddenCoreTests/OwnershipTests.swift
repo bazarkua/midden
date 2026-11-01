@@ -107,6 +107,27 @@ func scanAll(_ home: TempDir) async throws -> (ScanReport, [String: Finding]) {
         #expect(byPath[home.path(Self.renv)] != nil)
     }
 
+    /// Downloads is reported but doesn't claim what's in it, so an
+    /// installer and a project's node_modules inside it are findings of
+    /// their own. Downloads' size leaves them out: the three add up to the
+    /// folder, nothing counted twice.
+    @Test func findingsInsideDownloadsPartitionIt() async throws {
+        let home = try TempDir("home")
+        try home.write("Downloads/Setup.pkg", bytes: 100_000_000)
+        try home.write("Downloads/notes.txt", bytes: 300_000)
+        try home.write("Downloads/archive/photos.zip", bytes: 2_000_000)
+        try home.write("Downloads/project/package.json", text: "{}")
+        try home.write("Downloads/project/node_modules/dep/index.js", bytes: 500_000)
+        let (_, byPath) = try await scanAll(home)
+
+        let downloads = try #require(byPath[home.path("Downloads")])
+        let installer = try #require(byPath[home.path("Downloads/Setup.pkg")])
+        let modules = try #require(byPath[home.path("Downloads/project/node_modules")])
+        #expect(downloads.bytes + installer.bytes + modules.bytes == (try allocated(home.path("Downloads"))))
+        #expect(downloads.breakdown.reduce(0) { $0 + $1.bytes } == downloads.bytes)
+        #expect(!downloads.breakdown.contains { $0.name == "Setup.pkg" })
+    }
+
     /// A folder with rules below it must never be removable as a whole: a
     /// literal rule there says so itself (Info, manual), and a wildcard
     /// that happens to match one is turned into a container when matched.

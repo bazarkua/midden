@@ -1,9 +1,11 @@
 import Foundation
 
 /// Accounting for containers: folders a rule matches that hold folders
-/// other rules match. The findings inside a container partition it, so a
-/// container's own finding is only its remainder: its total minus the
-/// totals of the outermost findings inside it. Nothing is counted twice.
+/// other rules match, and folders a rule reports without claiming what's
+/// in them (Downloads). The findings inside one partition it, folders and
+/// files alike, so its own finding is only its remainder: its total minus
+/// the totals of the outermost findings inside it. Nothing is counted
+/// twice.
 enum Containers {
     /// A folder the walk sized, as the accounting needs it.
     struct Sized {

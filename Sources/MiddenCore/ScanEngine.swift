@@ -74,15 +74,24 @@ struct ScanEngine {
         var simulatorSizes: [String: Int64] = [:]
 
         // Findings inside a container cover part of it; its own finding is
-        // the rest.
-        let remainders = Containers.remainders(walk.marked.compactMap { directory in
+        // the rest. So for a rule that reports a folder without claiming
+        // what's in it (Downloads): the installers, large files, build
+        // folders and worktrees inside are left out of its size. A file
+        // with several names counts once, as its finding does.
+        var files: [Containers.Sized] = []
+        var seen: Set<UInt64> = []
+        for hit in collected.files.sorted(by: { $0.path < $1.path }) {
+            if hit.entry.linkCount > 1, !seen.insert(hit.entry.inode).inserted { continue }
+            files.append(Containers.Sized(path: hit.path, total: hit.entry.allocatedSize, isContainer: false))
+        }
+        let remainders = Containers.remainders(walk.marked.compactMap { directory -> Containers.Sized? in
             guard let match = directory.mark else { return nil }
             var isContainer = false
-            if case .rule(let rule) = match { isContainer = rule.isContainer }
+            if case .rule(let rule) = match { isContainer = rule.isContainer || !rule.rule.claimsSubtree }
             return Containers.Sized(
                 path: directory.path, total: directory.total, isContainer: isContainer,
                 children: isContainer ? directory.children : [])
-        })
+        } + files)
         for directory in walk.marked {
             guard let match = directory.mark else { continue }
             let remainder = remainders[directory.path]
