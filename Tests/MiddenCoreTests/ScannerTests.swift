@@ -155,14 +155,16 @@ import Testing
         }
     }
 
-    @Test func probesFullDiskAccess() throws {
+    @Test func probesFullDiskAccess() async throws {
         let home = try TempDir("home")
         // No protected folders exist in a fake home, so nothing is refused.
         #expect(FullDiskAccess.isGranted(home: home.url))
+        #expect(await FullDiskAccess.check(home: home.url))
         try home.mkdir("Library/Safari")
         chmod(home.path("Library/Safari"), 0o000)
         defer { chmod(home.path("Library/Safari"), 0o755) }
         #expect(!FullDiskAccess.isGranted(home: home.url))
+        #expect(!(await FullDiskAccess.check(home: home.url)))
     }
 
     @Test func parsesSimctlOutput() throws {

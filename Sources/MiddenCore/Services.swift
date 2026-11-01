@@ -46,6 +46,15 @@ public enum FullDiskAccess {
         return System.withDeadline(WalkDefaults.stallTimeout) { !System.needsFullDiskAccess(home: path) }
             ?? false
     }
+
+    /// `isGranted(home:)` without blocking the caller: the probe runs on its
+    /// own thread. (Not an `async` overload of `isGranted`, which would make
+    /// existing calls in async code pick it and need `await`.)
+    public static func check(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) async -> Bool {
+        (try? await Background.run { isGranted(home: home) }) ?? false
+    }
 }
 
 public enum MiddenError: Error, Sendable, Equatable {
