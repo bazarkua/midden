@@ -127,6 +127,8 @@ public struct Cleaner: Sendable {
     var barrier: (@Sendable (CleanStage, String) -> Void)?
     /// Replaces reading the user's processes, for "not in use" checks.
     var processUsage: (@Sendable () -> ProcessUsage)?
+    /// Replaces asking which apps are running.
+    var runningApp: (@Sendable (AppHint) -> String?)?
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.home = home
@@ -137,6 +139,7 @@ public struct Cleaner: Sendable {
         if let trash { engine.trash = trash }
         if let barrier { engine.barrier = barrier }
         if let processUsage { engine.processUsage = processUsage }
+        if let runningApp { engine.runningApp = runningApp }
         return engine
     }
 

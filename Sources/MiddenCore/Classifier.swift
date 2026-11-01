@@ -36,6 +36,10 @@ struct ProjectFacts: Sendable, Hashable {
         static let bunLock = Markers(rawValue: 1 << 7)
         static let uvLock = Markers(rawValue: 1 << 8)
         static let pythonRequirements = Markers(rawValue: 1 << 9)
+        /// Chromium's user data files: `Preferences`, and `Network
+        /// Persistent State` or `TransportSecurity`.
+        static let chromiumPreferences = Markers(rawValue: 1 << 10)
+        static let chromiumNetworkState = Markers(rawValue: 1 << 11)
     }
 
     var markers: Markers = []
@@ -67,6 +71,10 @@ struct ProjectFacts: Sendable, Hashable {
             case "uv.lock": markers.insert(.uvLock)
             case "requirements.txt", "pyproject.toml", "Pipfile", "setup.py":
                 markers.insert(.pythonRequirements)
+            case "Preferences" where entry.kind == .file:
+                markers.insert(.chromiumPreferences)
+            case "Network Persistent State", "TransportSecurity":
+                if entry.kind == .file { markers.insert(.chromiumNetworkState) }
             default: break
             }
             if entry.name == ".DS_Store" || BuildFolderKind.names.contains(entry.name) {

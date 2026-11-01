@@ -46,8 +46,9 @@ import Testing
         Case(path: "Library/Caches/Dia/User Data", title: "{app} disk cache", safety: .safe),
         // Their parents, when another wildcard matches them, are containers.
         Case(path: "Library/Caches/Google", title: "{app} cache", safety: .review, wildcard: "Google"),
-        Case(path: "Library/Application Support/Slack/Code Cache", title: "{app} web cache ({name})",
-             safety: .safe, wildcard: "Slack"),
+        // Application Support caches need the owner's Chromium layout,
+        // which a path alone doesn't show (tested in CarveOutTests).
+        Case(path: "Library/Application Support/Slack/Code Cache", title: nil, safety: nil),
         // A cache folder holding another rule's folder is that rule's container.
         Case(path: "Library/Caches/org.R-project.R", title: "R package caches", safety: .info),
         Case(path: "Library/Caches/pypoetry", title: "Poetry", safety: .info),
@@ -72,8 +73,7 @@ import Testing
         Case(path: "Library/Application Support/Claude/vm_bundles", title: "Claude app virtual machine", safety: .info),
         Case(path: "Library/Application Support/Cursor/snapshots", title: "Cursor snapshots", safety: .info),
         Case(path: ".local/share/claude/versions", title: "Claude Code versions", safety: .info),
-        Case(path: "Library/Application Support/Claude/Cache", title: "{app} web cache ({name})",
-             safety: .safe, wildcard: "Claude"),
+        Case(path: "Library/Application Support/Claude/Cache", title: nil, safety: nil),
         // Worktrees in these folders are found one by one; a rule would hide them.
         Case(path: ".codex/worktrees", title: nil, safety: nil),
         Case(path: ".cursor/worktrees", title: nil, safety: nil),

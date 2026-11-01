@@ -18,9 +18,11 @@ func allocated(_ path: String) throws -> Int64 {
     try Walker(root: path, delegate: SizeOnly()).run().totalBytes
 }
 
-/// A cleaner whose Trash is a folder inside the fake home.
+/// A cleaner whose Trash is a folder inside the fake home, and to which
+/// no app is running: the tests name real apps such as Slack.
 func testCleaner(_ home: TempDir) -> Cleaner {
     var cleaner = Cleaner(home: home.url)
+    cleaner.runningApp = { _ in nil }
     let bin = home.path(".test-trash")
     cleaner.trash = { path in
         try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)

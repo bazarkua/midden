@@ -238,6 +238,64 @@ func runScript(_ script: String, from directory: String) throws -> Process {
         #expect(pathExists(partial))
     }
 
+    // MARK: Electron and Chromium apps in Application Support
+
+    /// An Electron app's user data folder as Chromium writes it, with its
+    /// caches and its site data.
+    private func makeElectronApp(_ home: TempDir, _ name: String, layout: Bool = true) throws -> String {
+        let root = "Library/Application Support/" + name
+        if layout {
+            try home.write(root + "/Preferences", text: "{}")
+            try home.write(root + "/Network Persistent State", text: "{}")
+            try home.write(root + "/TransportSecurity", text: "{}")
+        }
+        try home.write(root + "/Cookies", bytes: 20_000)
+        try home.write(root + "/Login Data", bytes: 20_000)
+        try home.write(root + "/IndexedDB/https_app.example.com_0.indexeddb.leveldb/000003.log", bytes: 20_000)
+        try home.write(root + "/Local Storage/leveldb/000003.log", bytes: 20_000)
+        try home.write(root + "/Cache/Cache_Data/f_000001", bytes: 200_000)
+        try home.write(root + "/Code Cache/js/abcdef", bytes: 100_000)
+        try home.write(root + "/GPUCache/data_1", bytes: 50_000)
+        return root
+    }
+
+    @Test func appSupportCachesAreSafeOnlyForKnownElectronLayouts() async throws {
+        let home = try TempDir("home")
+        let slack = try makeElectronApp(home, "Slack")
+        let code = try makeElectronApp(home, "Code")
+        try home.write(code + "/CachedData/0f1e2d3c/chrome/js/a", bytes: 100_000)
+        let unknown = try makeElectronApp(home, "G HUB")
+        // Named like a known app, without Chromium's files: not that app.
+        let lookalike = try makeElectronApp(home, "Claude", layout: false)
+        // Unrelated: cache-like names and one Chromium file by coincidence.
+        try home.write("Library/Application Support/MyNotes/Cache/notes.db", bytes: 100_000)
+        try home.write("Library/Application Support/MyNotes/GPUCache/x", bytes: 10_000)
+        try home.write("Library/Application Support/MyNotes/Preferences", text: "{}")
+        let byPath = try await scanFindings(home)
+
+        for cache in ["Cache", "Code Cache", "GPUCache"] {
+            #expect(byPath[home.path(slack + "/" + cache)]?.safety == .safe, "\(cache)")
+            #expect(byPath[home.path(code + "/" + cache)]?.safety == .safe, "\(cache)")
+            let other = byPath[home.path(unknown + "/" + cache)]
+            #expect(other?.safety == .review, "\(cache)")
+            #expect(other?.explanation.contains("doesn't know") == true, "\(cache)")
+            #expect(byPath[home.path(lookalike + "/" + cache)] == nil, "\(cache)")
+        }
+        #expect(byPath[home.path(code + "/CachedData")]?.safety == .safe)
+        #expect(byPath[home.path(slack + "/Cache")]?.app?.bundleID == "com.tinyspeck.slackmacgap")
+        #expect(byPath[home.path("Library/Application Support/MyNotes/Cache")] == nil)
+
+        // Cleaning the caches keeps the app's sign-ins and site data.
+        let caches = ["Cache", "Code Cache", "GPUCache"].map { home.path(slack + "/" + $0) }
+        let results = await testCleaner(home).clean(caches).results
+        #expect(results.allSatisfy { $0.ok }, "\(results)")
+        for kept in ["Cookies", "Login Data", "IndexedDB", "Local Storage", "Preferences"] {
+            #expect(pathExists(home.path(slack + "/" + kept)), "\(kept)")
+        }
+        // removeContents keeps each cache folder itself.
+        #expect(pathExists(home.path(slack + "/Cache")))
+    }
+
     // MARK: llama.cpp
 
     /// llama.cpp downloads models into ~/Library/Caches/llama.cpp, and

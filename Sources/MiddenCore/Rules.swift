@@ -41,6 +41,9 @@ struct Rule: Sendable {
         case browserProfile
         /// A download in progress or interrupted: an `.incomplete` file.
         case unfinishedDownload
+        /// The folder holding it is a Chromium or Electron user data
+        /// folder: a Preferences file and Chromium's network state files.
+        case chromiumUserData
     }
 }
 
@@ -776,22 +779,39 @@ enum RuleCatalog {
                 """,
             action: .removeDirectory,
             app: .wildcard),
+        // Electron apps keep Chromium's caches in their user data folder in
+        // Application Support: Cache (the HTTP cache), Code Cache (compiled
+        // JavaScript) and GPUCache (compiled shaders), next to their
+        // cookies, logins, IndexedDB and Local Storage, which Midden never
+        // touches. Safe only for apps whose folder was checked on a Mac
+        // and only when the folder still looks like Chromium's (a
+        // Preferences file and its network state files); other apps with
+        // that layout are Review, and folders without it aren't matched.
+        electronCaches("Slack", AppHint(name: "Slack", bundleID: "com.tinyspeck.slackmacgap")),
+        electronCaches("Claude", AppHint(name: "Claude", bundleID: "com.anthropic.claudefordesktop")),
+        electronCaches("obsidian", AppHint(name: "Obsidian", bundleID: "md.obsidian")),
+        // The VS Code family also keeps CachedData, its own code cache per
+        // release, which VS Code deletes itself when it gets old
+        // (codeCacheCleaner.ts).
+        electronCaches("Code", AppHint(name: "Visual Studio Code", bundleID: "com.microsoft.VSCode"), codeCache: true),
+        electronCaches("Cursor", AppHint(name: "Cursor", bundleID: "com.todesktop.230313mzl4w4u92"), codeCache: true),
+        electronCaches("Antigravity", AppHint(name: "Antigravity", bundleID: "com.google.antigravity"), codeCache: true),
         Rule(
             paths: [
                 "Library/Application Support/*/Cache",
                 "Library/Application Support/*/Code Cache",
                 "Library/Application Support/*/GPUCache",
-                "Library/Application Support/*/CachedData",
             ],
-            category: .appCaches, safety: .safe,
+            category: .appCaches, safety: .review,
             title: "{app} web cache ({name})", group: "{app}",
             explanation: """
-                Web cache of {app}. Apps built on Electron or Chromium, such as Slack, VS Code, \
-                Cursor or Discord, keep it to load faster and rebuild it as needed. Quit {app} \
+                Web cache of {app}, an app built on Chromium or Electron. Midden doesn't know \
+                {app} well enough to say it keeps only files it can rebuild here. Quit {app} \
                 first.
                 """,
             action: .removeContents,
-            app: .wildcard),
+            app: .wildcard,
+            requires: .chromiumUserData),
 
         // MARK: Logs and Trash
         // Files only, never folders: macOS doesn't recreate some of them.
@@ -851,6 +871,23 @@ enum RuleCatalog {
                 """,
             action: .manual("See your models with `ollama list` and remove the ones you don't use with `ollama rm <model>`.")),
     ]
+
+    /// The Chromium caches in a known Electron app's user data folder.
+    private static func electronCaches(_ folder: String, _ app: AppHint, codeCache: Bool = false) -> Rule {
+        let names = ["Cache", "Code Cache", "GPUCache"] + (codeCache ? ["CachedData"] : [])
+        return Rule(
+            paths: names.map { "Library/Application Support/\(folder)/\($0)" },
+            category: .appCaches, safety: .safe,
+            title: "{app} web cache ({name})", group: "{app}",
+            explanation: """
+                Files {app} keeps to load faster: web content it downloaded, compiled scripts \
+                and graphics. {app} rebuilds them as needed; your sign-ins and data in {app} \
+                are kept elsewhere and stay. Quit {app} first.
+                """,
+            action: .removeContents,
+            app: .fixed(app),
+            requires: .chromiumUserData)
+    }
 
     /// A Chromium browser's disk cache, kept per profile apart from the
     /// profile itself.
@@ -924,6 +961,8 @@ enum RuleCatalog {
                 || folder.entries.contains { $0.name == "Local State" && $0.kind == .file }
         case .unfinishedDownload:
             folder.entries.contains { $0.name.hasSuffix(".incomplete") }
+        case .chromiumUserData:
+            folder.parent.markers.isSuperset(of: [.chromiumPreferences, .chromiumNetworkState])
         }
     }
 

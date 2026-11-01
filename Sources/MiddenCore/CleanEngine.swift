@@ -45,6 +45,9 @@ struct CleanEngine {
     /// The mount table and a path's device; replaceable in tests.
     var mountPoints: @Sendable () -> [String]? = { System.mountPoints() }
     var deviceOf: @Sendable (String) -> dev_t? = { CleanEngine.lstatDevice($0) }
+    /// The name of a running app matching a hint, if any. Replaceable so
+    /// tests don't depend on the apps open on the Mac running them.
+    var runningApp: @Sendable (AppHint) -> String? = { Apps.running($0) }
     /// Reads the user's processes for "not in use" checks.
     var processUsage: @Sendable () -> ProcessUsage = { ProcessUsage.current() }
 
@@ -122,7 +125,7 @@ struct CleanEngine {
         if let refusal = volumeRefusal(finding) {
             return refuse(refusal, finding)
         }
-        if let app = finding.app, let running = Apps.running(app) {
+        if let app = finding.app, let running = runningApp(app) {
             return refuse("\(running) is running. Quit it first.", finding)
         }
         return .success(Approved(finding: finding, contents: contents))
