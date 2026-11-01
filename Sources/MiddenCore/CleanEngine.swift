@@ -217,7 +217,7 @@ struct CleanEngine {
                     breakdown = Findings.breakdown(total: bytes, children: survey.children)
                 }
                 var finding = Findings.rule(rule, path: path, bytes: bytes, breakdown: breakdown)
-                if rule.rule.checkInUse { finding = Findings.checkingUse(finding, processUsage()) }
+                if rule.rule.checkInUse { finding = Findings.checkingUse(finding, processUsage(), by: rule.rule.inUseBy) }
                 return .success((finding, rule.rule.contents))
             case .buildFolder(let build):
                 var breakdown: [Slice] = []

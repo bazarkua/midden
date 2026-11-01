@@ -149,6 +149,28 @@ struct ProcessUsage: Sendable {
         }
     }
 
+    /// Gradle daemons and builds, and processes that run from, work in or
+    /// name `gradleHome` (~/.gradle). Gradle's launchers, daemons and
+    /// workers are Java programs whose main class is in org.gradle.
+    func gradle(home gradleHome: String) -> [Process] {
+        let mains = [
+            "org.gradle.launcher.daemon.bootstrap.GradleDaemon", "org.gradle.wrapper.GradleWrapperMain",
+            "org.gradle.launcher.GradleMain", "worker.org.gradle.process.internal.worker.GradleWorkerMain",
+        ]
+        return processes.filter { process in
+            process.arguments.contains { mains.contains($0) } || !Self([process]).using(gradleHome).isEmpty
+        }
+    }
+
+    init(processes: [Process], failure: String? = nil) {
+        self.processes = processes
+        self.failure = failure
+    }
+
+    private init(_ processes: [Process]) {
+        self.init(processes: processes)
+    }
+
     static func isInside(_ candidate: String, _ path: String) -> Bool {
         candidate == path || candidate.hasPrefix(path + "/")
     }

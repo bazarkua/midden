@@ -32,6 +32,17 @@ struct Rule: Sendable {
     /// processes after the scan and again when cleaning; while a program
     /// uses it, or the processes can't all be read, it's Info.
     var checkInUse = false
+    /// Which programs count as using it, for `checkInUse`.
+    var inUseBy: InUseBy = .folder
+
+    enum InUseBy: Sendable {
+        /// Programs that run from the folder, work in it, or name it.
+        case folder
+        /// Any Gradle daemon or build (a Gradle main class in its
+        /// arguments), and anything that runs from, works in or names
+        /// ~/.gradle: a daemon keeps files from the caches open.
+        case gradle
+    }
     /// What the folder itself must show for the rule to apply; when it
     /// doesn't, the next matching rule does.
     var requires: Requirement? = nil
@@ -443,10 +454,13 @@ enum RuleCatalog {
             title: "Gradle caches", group: "Gradle",
             explanation: """
                 Dependencies Gradle downloaded and outputs it cached between builds. Gradle \
-                downloads and rebuilds them on the next build, which takes longer. Stop running \
-                Gradle daemons first with `./gradlew --stop`.
+                downloads and rebuilds them on the next build, which takes longer. Midden cleans \
+                them only while no Gradle daemon or build runs. Stop the daemons with \
+                `./gradlew --stop`.
                 """,
-            action: .removeDirectory),
+            action: .removeDirectory,
+            checkInUse: true,
+            inUseBy: .gradle),
         Rule(
             paths: [".gradle/wrapper/dists"],
             category: .packageCaches, safety: .review,
@@ -455,7 +469,9 @@ enum RuleCatalog {
                 Versions of Gradle downloaded by projects' Gradle wrapper (gradlew). Each \
                 project downloads its Gradle version again on its next build.
                 """,
-            action: .removeDirectory),
+            action: .removeDirectory,
+            checkInUse: true,
+            inUseBy: .gradle),
         Rule(
             paths: [".cargo/registry"],
             category: .packageCaches, safety: .safe,

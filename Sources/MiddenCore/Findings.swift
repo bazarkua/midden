@@ -55,7 +55,7 @@ enum Findings {
     /// Adds the "not in use" check to a finding whose rule asks for it. A
     /// program that uses it, or a process listing that isn't complete,
     /// makes it Info: Midden doesn't delete it until that's settled.
-    static func checkingUse(_ finding: Finding, _ usage: ProcessUsage) -> Finding {
+    static func checkingUse(_ finding: Finding, _ usage: ProcessUsage, by scope: Rule.InUseBy = .folder) -> Finding {
         guard finding.action.isAutomatic else { return finding }
         var finding = finding
         let title = "Not in use"
@@ -66,7 +66,18 @@ enum Findings {
             finding.action = .manual("Midden couldn't check which programs use it. Scan again to retry.")
             return finding
         }
-        let users = usage.using(finding.path)
+        let users: [ProcessUsage.Process]
+        switch scope {
+        case .folder: users = usage.using(finding.path)
+        case .gradle:
+            // ~/.gradle/caches or ~/.gradle/wrapper/dists: up to ~/.gradle.
+            var gradleHome = finding.path
+            while !gradleHome.isEmpty, (gradleHome as NSString).lastPathComponent != ".gradle" {
+                gradleHome = (gradleHome as NSString).deletingLastPathComponent
+                if gradleHome == "/" { gradleHome = ""; break }
+            }
+            users = usage.gradle(home: gradleHome.isEmpty ? finding.path : gradleHome)
+        }
         guard !users.isEmpty else {
             finding.checks.append(SafetyCheck(
                 id: "inUse", title: title, passed: true, detail: "No running program uses it."))
