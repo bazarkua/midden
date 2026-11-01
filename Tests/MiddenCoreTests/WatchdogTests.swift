@@ -224,7 +224,7 @@ private final class WeakRecord {
 
         let listed = Counter()
         let root = dir.path
-        func waitingWalk(_ flag: CancellationFlag) -> Walker<SizeOnly> {
+        let waitingWalk: @Sendable (CancellationFlag) -> Walker<SizeOnly> = { _ in
             Walker(root: root, delegate: SizeOnly(), threadCount: 2, stallTimeout: 60, threads: budget) {
                 path, reader throws(POSIXError) in
                 listed.increment()

@@ -81,7 +81,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         #expect(trigger.changed)
         // Before deleting, nothing re-checks the ancestors: removeItem
         // follows the new symlink and deletes the folder outside home.
-        try expectSafe(known: stage == .beforeDelete, "ancestor swapped right before removeItem") {
+        expectSafe(known: stage == .beforeDelete, "ancestor swapped right before removeItem") {
             #expect(exists(sentinel))
             #expect(!result.ok)
         }
@@ -101,7 +101,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
 
         let result = await cleaner(home, trigger).clean([logs]).results[0]
         #expect(trigger.changed)
-        try expectSafe(known: stage == .beforeDelete, "folder swapped right before removeContents") {
+        expectSafe(known: stage == .beforeDelete, "folder swapped right before removeContents") {
             #expect(exists(sentinel))
             #expect(!result.ok)
         }
@@ -141,7 +141,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         let result = await cleaner(home, trigger).clean([cache]).results[0]
         #expect(trigger.changed)
         // Nothing checks the item's identity right before removeItem.
-        try expectSafe(known: stage == .beforeDelete, "replaced by a file right before removeItem") {
+        expectSafe(known: stage == .beforeDelete, "replaced by a file right before removeItem") {
             #expect(exists(cache))
             #expect(!result.ok)
         }
@@ -202,7 +202,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
         _ = await cleaner(home, trigger).clean([home.path("Downloads/Setup.pkg")])
         #expect(trigger.changed)
         // Moved, not deleted, but moved out of a folder outside home.
-        try expectSafe(known: stage == .beforeDelete, "folder swapped right before moving to the Trash") {
+        expectSafe(known: stage == .beforeDelete, "folder swapped right before moving to the Trash") {
             #expect(exists(sentinel))
         }
     }
@@ -242,7 +242,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
 
         let result = await cleaner(home, trigger).clean([cache]).results[0]
         #expect(trigger.changed)
-        try expectSafe(known: true, "replaced by another folder after validation; no identity check") {
+        expectSafe(known: true, "replaced by another folder after validation; no identity check") {
             #expect(exists(sentinel))
             #expect(!result.ok)
         }
@@ -265,7 +265,7 @@ private func expectSafe(known: Bool, _ comment: Comment, _ body: () throws -> Vo
 
         let result = await cleaner(home, trigger).clean([worktree]).results[0]
         #expect(trigger.changed)
-        try expectSafe(known: true, "ignored file added after the audit; git removes it without asking") {
+        expectSafe(known: true, "ignored file added after the audit; git removes it without asking") {
             #expect(exists(secret))
             #expect(!result.ok)
         }

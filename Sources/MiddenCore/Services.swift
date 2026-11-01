@@ -165,7 +165,6 @@ public struct Cleaner: Sendable {
     /// What cleaning each id would do, checked the same way `clean` checks
     /// it, without deleting anything. Shown to the user before they confirm.
     public func plan(_ ids: [String]) async -> [CleanPlan] {
-        let home = self.home
         let plans = try? await Background.run { () -> [CleanPlan] in
             guard let engine = try? makeEngine() else {
                 return ids.map { CleanPlan(id: $0, finding: nil, refusal: "Can't read the home folder.") }
