@@ -98,7 +98,10 @@ import Testing
 
     /// When the exit status can't be read, the command didn't succeed.
     @Test func anUnreadableExitStatusIsAFailure() {
-        let result = Command.run(["/usr/bin/true"], environment: [:], timeout: 10) { _, _, _ in
+        // Reaps the real child first, so the test leaves no zombie behind,
+        // then reports ECHILD as if someone else had.
+        let result = Command.run(["/usr/bin/true"], environment: [:], timeout: 10) { pid, status, _ in
+            _ = Darwin.waitpid(pid, status, 0)
             errno = ECHILD
             return -1
         }
@@ -307,7 +310,10 @@ private func concurrently(_ count: Int, _ body: @escaping @Sendable (Int) -> Voi
     /// is released at once.
     @Test func ECHILDReleasesTheSlot() {
         let children = CommandChildren(limit: 1)
-        let notOurs: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { _, _, _ in
+        // Reaps the real child first, so nothing is left behind, then says
+        // it isn't ours.
+        let notOurs: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { pid, status, _ in
+            _ = Darwin.waitpid(pid, status, 0)
             errno = ECHILD
             return -1
         }
