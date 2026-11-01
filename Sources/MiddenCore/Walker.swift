@@ -29,8 +29,57 @@ import Synchronization
 // - The stuck thread can't be cancelled, but whenever its call returns it
 //   tries the same compare-and-swap (listing -> listed), loses, drops the
 //   result and exits. Nothing it read reaches the totals or the delegate.
+// - Every stuck thread stays blocked in the kernel, so they are bounded
+//   (StuckListings): a walk starts at most `threadCount` replacements, none
+//   once the process-wide limit of stuck threads is reached, and doesn't
+//   start at all past it. A folder whose listing is still stuck from an
+//   earlier walk is counted as stalled without being tried again, so
+//   scanning the same blocked folder repeatedly doesn't add threads. When
+//   no unstuck worker is left, the supervisor counts every folder still
+//   queued as unreadable instead of listing it.
+// - After run() returns, the walker drops what it collected, so a stuck
+//   thread, which still references the walker, keeps only its own chain
+//   of folders alive, not the whole scan.
+// - Cancelling gives up every listing in progress at the next tick, so a
+//   cancelled walk returns within one tick (at most 0.25 s) even when
+//   every thread is blocked.
 //
 // The walk ends when the queue is drained; it never waits for a stuck thread.
+
+/// Listings the watchdog gave up whose threads are still blocked, across
+/// every walk that shares this value (by default the whole process).
+final class StuckListings: Sendable {
+    /// Walks start threads only while fewer than this many are stuck. A
+    /// thread started under the limit can still block, so the number of
+    /// stuck threads stays at most `limit + threadCount - 1`.
+    let limit: Int
+    /// Folder path -> threads stuck listing it.
+    private let paths = Mutex<[String: Int]>([:])
+
+    static let process = StuckListings(limit: 32)
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    var count: Int { paths.withLock { $0.values.reduce(0, +) } }
+
+    func contains(_ path: String) -> Bool {
+        paths.withLock { $0[path] != nil }
+    }
+
+    func add(_ path: String) {
+        paths.withLock { $0[path, default: 0] += 1 }
+    }
+
+    /// The stuck call for `path` returned.
+    func remove(_ path: String) {
+        paths.withLock { paths in
+            let left = (paths[path] ?? 1) - 1
+            paths[path] = left > 0 ? left : nil
+        }
+    }
+}
 
 /// Decisions the walker leaves to its caller: which directories to remember,
 /// what each subdirectory inherits, and what to skip. The walker itself knows
@@ -150,6 +199,8 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     let stallTimeout: TimeInterval
     /// Remember files and folders at least this big, for the space map.
     let mapFloor: Int64?
+    /// Threads left blocked by given-up listings, shared across walks.
+    let stuckListings: StuckListings
     private let lister: Lister
     private let spaceRecords = Mutex<[SpaceRecord]>([])
 
@@ -171,6 +222,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         root: String, delegate: Delegate, threadCount: Int = WalkDefaults.threadCount,
         stallTimeout: TimeInterval = WalkDefaults.stallTimeout,
         mapFloor: Int64? = nil,
+        stuckListings: StuckListings = .process,
         lister: @escaping Lister = { path, reader throws(POSIXError) in try reader.entries(atPath: path) }
     ) {
         self.root = root
@@ -178,6 +230,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         self.threadCount = max(threadCount, 1)
         self.stallTimeout = stallTimeout
         self.mapFloor = mapFloor
+        self.stuckListings = stuckListings
         self.lister = lister
     }
 
@@ -197,10 +250,20 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             parentRecord: nil, context: delegate.rootContext(),
             initialBytes: Int64(info.st_blocks) * 512)])
 
-        for _ in 0..<threadCount {
-            startWorker(device: device, cancellation: cancellation, progress: progress)
+        // Past the limit of stuck threads, a walk that might add more doesn't
+        // start: everything counts as unreadable, the root included.
+        let workerCount = min(threadCount, stuckListings.limit - stuckListings.count)
+        if workerCount > 0 {
+            for _ in 0..<workerCount {
+                startWorker(device: device, cancellation: cancellation, progress: progress)
+            }
+        } else {
+            queue.drain { failed($0, code: ETIMEDOUT) }
         }
         supervise(device: device, cancellation: cancellation, progress: progress)
+        // A thread still stuck in a listing references this walker; it
+        // shouldn't keep what the walk collected alive.
+        defer { releaseCollected() }
 
         return WalkResult(
             totalBytes: rootTotal.load(ordering: .acquiring),
@@ -213,6 +276,14 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
             spaceRecords: spaceRecords.withLock { $0 },
             marked: marked.withLock { $0 },
             root: rootRecord.withLock { $0 })
+    }
+
+    private func releaseCollected() {
+        spaceRecords.withLock { $0 = [] }
+        marked.withLock { $0 = [] }
+        rootRecord.withLock { $0 = nil }
+        workers.withLock { $0 = [] }
+        hardLinks.removeAll()
     }
 
     private func startWorker(
@@ -243,9 +314,12 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
         device: dev_t, cancellation: CancellationFlag,
         progress: @escaping @Sendable (WalkProgress) -> Void
     ) {
-        let timeout = UInt64(stallTimeout * 1e9)
+        let stallNanoseconds = UInt64(stallTimeout * 1e9)
         let tick = min(max(stallTimeout / 4, 0.01), 0.25)
+        var replaced = 0
         while !queue.waitUntilFinished(timeout: tick) {
+            // A cancelled walk doesn't wait for slow listings.
+            let timeout = cancellation.isCancelled ? 0 : stallNanoseconds
             for worker in workers.withLock({ $0 }) where !worker.isAbandoned {
                 // Read the clock after the worker's timestamp, which may be newer
                 // than any clock reading taken before it.
@@ -256,10 +330,21 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
                     ).exchanged
                 else { continue }
                 worker.abandon()
+                stuckListings.add(node.path)
                 stalled.withLock { $0.append(node.path) }
                 failed(node, code: ETIMEDOUT)
                 queue.finishedChain()  // On behalf of the stuck worker.
-                startWorker(device: device, cancellation: cancellation, progress: progress)
+                if replaced < threadCount, stuckListings.count < stuckListings.limit {
+                    replaced += 1
+                    startWorker(device: device, cancellation: cancellation, progress: progress)
+                } else if workers.withLock({ $0.allSatisfy(\.isAbandoned) }) {
+                    // No thread left to list anything: what's still queued
+                    // is counted as unreadable rather than waited for.
+                    queue.drain { queued in
+                        queued.state.store(Node.givenUp, ordering: .releasing)
+                        failed(queued, code: ETIMEDOUT)
+                    }
+                }
             }
         }
     }
@@ -282,6 +367,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
                 }
                 guard let kept = process(node, reader: reader, worker: worker, device: device) else {
                     // The watchdog gave up this listing and has taken over.
+                    stuckListings.remove(node.path)
                     return
                 }
                 next = kept.next
@@ -311,6 +397,14 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     /// for the calling thread to continue with, or nil if the watchdog gave
     /// up this listing meanwhile.
     private func process(_ node: Node, reader: DirectoryReader, worker: Worker, device: dev_t) -> Kept? {
+        // A thread from an earlier walk is still blocked listing it: another
+        // try would most likely block one more.
+        if stuckListings.contains(node.path) {
+            node.state.store(Node.givenUp, ordering: .releasing)
+            stalled.withLock { $0.append(node.path) }
+            failed(node, code: ETIMEDOUT)
+            return Kept(next: nil)
+        }
         worker.begin(node)
         let listing = Result { () throws(POSIXError) in try lister(node.path, reader) }
         worker.end()
@@ -540,6 +634,21 @@ final class WorkQueue<Element: Sendable>: @unchecked Sendable {
         return stack.removeLast()
     }
 
+    /// Removes everything queued and hands each element to `body`, which
+    /// must not push more work. Finishes the queue if no thread holds work.
+    func drain(_ body: (Element) -> Void) {
+        condition.lock()
+        let pending = stack
+        stack.removeAll()
+        condition.unlock()
+        pending.forEach(body)
+        condition.lock()
+        let idle = busy == 0 && stack.isEmpty
+        if idle { finished = true }
+        condition.unlock()
+        if idle { condition.broadcast() }
+    }
+
     /// A thread finished the work it popped, including what it kept for itself.
     func finishedChain() {
         condition.lock()
@@ -563,6 +672,10 @@ final class HardLinkSet: Sendable {
     /// Returns true the first time an inode is seen.
     func insert(_ inode: UInt64) -> Bool {
         shards[Int(inode % 64)].inodes.withLock { $0.insert(inode).inserted }
+    }
+
+    func removeAll() {
+        for shard in shards { shard.inodes.withLock { $0 = [] } }
     }
 }
 
