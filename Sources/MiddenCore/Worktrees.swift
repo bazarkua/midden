@@ -94,14 +94,20 @@ struct WorktreeAuditor: Sendable {
 
         // Every option that decides what status shows is given explicitly, so
         // the user's configuration (status.showUntrackedFiles=no, submodule
-        // ignore settings) can't hide changes.
+        // ignore settings) can't hide changes. Ignored files are listed too,
+        // an ignored folder as one entry without its contents.
         let status = run(
-            "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+            "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none",
+            "--ignored=matching")
+        // Ignored files that aren't build output: `git worktree remove`
+        // deletes them without asking. Nil when status failed.
+        var personalIgnored: [String]?
         if !status.succeeded {
             checks.append(SafetyCheck(id: "uncommitted", title: "No uncommitted changes", passed: false, detail: status.message))
             steps.append("check it with `git -C \(Self.quoted(path)) status`")
         } else {
-            let changed = Self.changedPaths(porcelainZ: status.output)
+            let (changed, ignored) = Self.parseStatus(porcelainZ: status.output)
+            personalIgnored = ignored.filter { !Self.isGenerated($0) }
             if changed.isEmpty {
                 checks.append(SafetyCheck(
                     id: "uncommitted", title: "No uncommitted changes", passed: true,
@@ -112,6 +118,19 @@ struct WorktreeAuditor: Sendable {
                     id: "uncommitted", title: "No uncommitted changes", passed: false,
                     detail: "\(changed.count) changed or untracked \(changed.count == 1 ? "file" : "files"): \(sample)"))
                 steps.append("commit or discard the changes")
+            }
+        }
+        if let personalIgnored {
+            if personalIgnored.isEmpty {
+                checks.append(SafetyCheck(
+                    id: "ignoredFiles", title: "No ignored files of your own", passed: true,
+                    detail: "Files git ignores here are build output or caches, which are made again."))
+            } else {
+                let count = personalIgnored.count
+                let sample = personalIgnored.prefix(3).joined(separator: ", ") + (count > 3 ? ", …" : "")
+                checks.append(SafetyCheck(
+                    id: "ignoredFiles", title: "No ignored files of your own", passed: false,
+                    detail: "\(count) \(count == 1 ? "file or folder" : "files or folders") git ignores, so it doesn't count them as changes: \(sample). Removing the worktree deletes them."))
             }
         }
 
@@ -177,15 +196,16 @@ struct WorktreeAuditor: Sendable {
         }
 
         // An unknown date is not evidence of an idle worktree: the check fails
-        // and the verdict stays "review".
+        // and the verdict stays "review". So do ignored files of the user's.
         let idle = lastActivity.map { now.timeIntervalSince($0) >= activeWindow } ?? false
         checks.append(SafetyCheck(
             id: "lastActivity", title: "Not used lately", passed: idle,
             detail: lastActivity.map { "Last checkout or commit \(Dates.describe($0, now: now))." }
                 ?? "Couldn't tell when it was last used."))
+        let onlyGeneratedIgnored = personalIgnored?.isEmpty == true
         return WorktreeAudit(
             repositoryName: repositoryName, repository: repository, branch: branch, checks: checks,
-            safety: idle ? .safe : .review,
+            safety: idle && onlyGeneratedIgnored ? .safe : .review,
             action: .run(["git", "-C", repository, "worktree", "remove", path]),
             lastActivity: lastActivity)
     }
@@ -276,19 +296,44 @@ struct WorktreeAuditor: Sendable {
         return fields.first.flatMap { Double($0) }
     }
 
-    /// The paths in `git status --porcelain=v1 -z` output. Each entry is
-    /// `XY <path>` ending in NUL; a rename or copy is followed by one more
-    /// NUL-terminated field, its original path, which isn't a second change.
-    static func changedPaths(porcelainZ output: String) -> [String] {
-        var paths: [String] = []
+    /// The paths in `git status --porcelain=v1 -z` output: changed or
+    /// untracked, and ignored (`!!`). Each entry is `XY <path>` ending in
+    /// NUL; a rename or copy is followed by one more NUL-terminated field,
+    /// its original path, which isn't a second change.
+    static func parseStatus(porcelainZ output: String) -> (changed: [String], ignored: [String]) {
+        var changed: [String] = []
+        var ignored: [String] = []
         var fields = output.split(separator: "\0", omittingEmptySubsequences: true).makeIterator()
         while let field = fields.next() {
             guard field.count > 3 else { continue }
             let state = field.prefix(2)
-            paths.append(String(field.dropFirst(3)))
+            let path = String(field.dropFirst(3))
+            if state == "!!" {
+                ignored.append(path)
+            } else {
+                changed.append(path)
+            }
             if state.contains("R") || state.contains("C") { _ = fields.next() }
         }
-        return paths
+        return (changed, ignored)
+    }
+
+    /// Names of ignored files and folders a tool makes again by itself:
+    /// build folders, caches, compiled Python, logs, Finder's metadata.
+    static let generatedNames: Set<String> = BuildFolderKind.names.union([
+        "dist", ".build", ".swiftpm", "DerivedData", "__pycache__", ".cache", "coverage",
+        ".nyc_output", ".eslintcache", ".DS_Store",
+    ])
+    static let generatedExtensions: Set<String> = ["pyc", "pyo", "o", "log", "tsbuildinfo"]
+
+    /// Whether an ignored path (`dir/` for a folder) is build output or a
+    /// cache. Everything else could be the only copy of something.
+    static func isGenerated(_ path: String) -> Bool {
+        if path.split(separator: "/").contains(where: { generatedNames.contains(String($0)) }) {
+            return true
+        }
+        let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
+        return generatedExtensions.contains((trimmed as NSString).pathExtension)
     }
 
     static func quoted(_ path: String) -> String {

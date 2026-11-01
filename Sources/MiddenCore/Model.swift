@@ -111,8 +111,8 @@ public enum CleanAction: Codable, Sendable, Hashable {
 /// the verdict is explainable. Example: "No uncommitted changes".
 public struct SafetyCheck: Codable, Sendable, Hashable {
     /// What is checked, stable across versions while titles may be reworded:
-    /// worktrees use "uncommitted", "onBranch", "locked", "inUse",
-    /// "lastActivity", "gitInstalled", "gitReadable", "repositoryExists";
+    /// worktrees use "uncommitted", "ignoredFiles", "onBranch", "locked",
+    /// "inUse", "lastActivity", "gitInstalled", "gitReadable", "repositoryExists";
     /// build folders "projectIdle", "packagesRecorded"; simulators
     /// "simulatorUnavailable". Empty for checks saved before ids existed.
     public var id: String

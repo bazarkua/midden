@@ -30,7 +30,7 @@ The disk on my Mac was 97% full. The biggest single cause was 117 old worktrees 
 
 | | Examples | How Midden decides |
 |---|---|---|
-| Git worktrees | `.claude/worktrees`, `~/.codex/worktrees`, agent worktrees in `/tmp` | Five checks: uncommitted changes, commit on a branch, locked, in use by a program, last used |
+| Git worktrees | `.claude/worktrees`, `~/.codex/worktrees`, agent worktrees in `/tmp` | Six checks: uncommitted changes, ignored files of your own, commit on a branch, locked, in use by a program, last used |
 | Build folders | `node_modules`, `target`, `.next`, `.venv`, `Pods` | Only when the project file sits next to it. Safe once the project has been idle for 14 days |
 | Developer tools | Xcode DerivedData and device support, simulators whose runtime is gone | Xcode rebuilds or copies them again. Android images and Docker data are explained, not deleted |
 | Package caches | npm, Gradle, Cargo, uv, pip, CocoaPods | Downloaded again when a project needs them |

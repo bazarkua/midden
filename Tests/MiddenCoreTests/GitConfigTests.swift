@@ -58,6 +58,37 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
         #expect(exists(home.path("worktrees/feature/unsaved.txt")))
     }
 
+    /// `git status` never shows ignored files, and `git worktree remove`
+    /// deletes them without asking. A `.env` or a local database is often
+    /// ignored and exists nowhere else, so it keeps a worktree from being
+    /// Safe. Build output and caches are recreated and don't.
+    @Test func ignoredPersonalFilesMakeAWorktreeReviewNotSafe() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try home.write("repo/.gitignore", text: "node_modules/\n__pycache__/\n*.log\n.env\n*.sqlite\n")
+        try sh(["git", "-C", repository, "commit", "-q", "-am", "Ignore more"])
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        try home.write("worktrees/feature/node_modules/dep/index.js", bytes: 100)
+        try home.write("worktrees/feature/app/__pycache__/main.pyc", bytes: 100)
+        try home.write("worktrees/feature/debug.log", bytes: 100)
+
+        let generatedOnly = try auditWorktree(home, worktree)
+        #expect(generatedOnly.safety == .safe, "\(generatedOnly.checks)")
+        #expect(generatedOnly.checks.first { $0.id == "ignoredFiles" }?.passed == true)
+
+        try home.write("worktrees/feature/.env", text: "API_KEY=only-copy")
+        try home.write("worktrees/feature/data/local.sqlite", bytes: 4_096)
+        let personal = try auditWorktree(home, worktree)
+        #expect(personal.safety == .review)
+        let check = try #require(personal.checks.first { $0.id == "ignoredFiles" })
+        #expect(!check.passed)
+        #expect(check.detail.contains(".env"), "\(check.detail)")
+        #expect(check.detail.contains("data/local.sqlite"), "\(check.detail)")
+        #expect(!check.detail.contains("node_modules"), "\(check.detail)")
+        // Still removable when the user picks it: it's a question, not a block.
+        #expect(personal.action.isAutomatic)
+    }
+
     @Test func namesWithNewlinesAndRenamesAreCountedOnce() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
