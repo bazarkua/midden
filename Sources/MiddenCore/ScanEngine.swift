@@ -59,8 +59,21 @@ struct ScanEngine {
             }
         }
 
+        // One finding per file: hard links to the same file are reported once,
+        // under the first of their paths.
+        var linked: [UInt64: [ScanDelegate.FileHit]] = [:]
         for hit in delegate.files where hit.entry.allocatedSize >= minimum {
-            findings.append(Findings.file(hit.match, path: hit.path, entry: hit.entry))
+            if hit.entry.linkCount > 1 {
+                linked[hit.entry.inode, default: []].append(hit)
+            } else {
+                findings.append(Findings.file(hit.match, path: hit.path, entry: hit.entry))
+            }
+        }
+        for hits in linked.values {
+            let names = hits.sorted { $0.path < $1.path }
+            findings.append(Findings.file(
+                names[0].match, path: names[0].path, entry: names[0].entry,
+                otherNames: names.dropFirst().map(\.path)))
         }
 
         if !simulatorSizes.isEmpty, let devices = Simulators.unavailable(home: home) {

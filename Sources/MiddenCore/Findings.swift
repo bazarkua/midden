@@ -85,7 +85,10 @@ enum Findings {
             lastActivity: audit.lastActivity, breakdown: breakdown)
     }
 
-    static func file(_ match: FileMatch, path: String, entry: DirectoryEntry) -> Finding {
+    /// - Parameter otherNames: other paths of the same file (hard links).
+    static func file(
+        _ match: FileMatch, path: String, entry: DirectoryEntry, otherNames: [String] = []
+    ) -> Finding {
         let folder = ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent
         let modified = Date(timeIntervalSince1970: entry.modified)
         var explanation: String
@@ -106,9 +109,12 @@ enum Findings {
         }
         if entry.linkCount > 1 {
             explanation += """
-                 It has \(entry.linkCount) hard links: deleting this name frees no space until the \
-                others are gone too.
+                 The same file has \(entry.linkCount) names (hard links); deleting one frees no \
+                space while another remains.
                 """
+            if !otherNames.isEmpty {
+                explanation += " Also at " + otherNames.prefix(3).joined(separator: ", ") + "."
+            }
         }
         return Finding(
             id: path, category: .largeFiles, title: entry.name, path: path, group: folder,

@@ -129,4 +129,20 @@ import Testing
         #expect(finding.id == "sim:AAA")
         #expect(finding.action == CleanAction.run(["xcrun", "simctl", "delete", "AAA"]))
     }
+
+    @Test func reportsAHardLinkedFileOnce() async throws {
+        let home = try TempDir("home")
+        let original = try home.write("Downloads/releases/1.0/tool.dmg", bytes: 100_000_000)
+        let link = home.path("Downloads/releases/latest/tool.dmg")
+        try home.mkdir("Downloads/releases/latest")
+        try FileManager.default.linkItem(atPath: original, toPath: link)
+
+        let report = try await Scanner(options: ScanOptions(home: home.url, minimumBytes: 1_000_000)).scan()
+        let files = report.findings.filter { $0.category == .largeFiles }
+        #expect(files.count == 1)
+        #expect(files.first?.path == original)
+        #expect(files.first?.explanation.contains("Also at \(link).") == true)
+        let downloads = try #require(report.findings.first { $0.path == home.path("Downloads") })
+        #expect(downloads.bytes < 2 * 100_000_000)
+    }
 }
