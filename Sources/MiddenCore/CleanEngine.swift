@@ -40,6 +40,9 @@ struct CleanEngine {
     /// Called at each stage of cleaning a file-system item, so tests can
     /// change the file system at exactly that moment.
     var barrier: @Sendable (CleanStage, String) -> Void = { _, _ in }
+    /// The mount table and a path's device; replaceable in tests.
+    var mountPoints: @Sendable () -> [String]? = { System.mountPoints() }
+    var deviceOf: @Sendable (String) -> dev_t? = { CleanEngine.lstatDevice($0) }
 
     init(home: URL) throws {
         self.home = try System.canonicalPath(home.path)
@@ -238,23 +241,49 @@ struct CleanEngine {
     /// Checked when validating and again right before acting: no disk is
     /// mounted at or inside the item, and what FileManager deletes or moves
     /// is on the home folder's disk.
+    /// Everything that can't be verified is a refusal: an unreadable mount
+    /// table, a mount point whose folder can't be resolved, a device that
+    /// can't be read.
     func volumeRefusal(_ finding: Finding) -> String? {
         if case .manual = finding.action { return nil }
-        guard let mountPoints = System.mountPoints() else {
+        guard let table = mountPoints() else {
             return "Midden couldn't read the list of mounted disks."
         }
-        if let refusal = Self.mountRefusal(finding.path, mountPoints: mountPoints) {
+        guard let resolved = Self.canonicalMountPoints(table) else {
+            return "Midden couldn't verify where every disk is mounted."
+        }
+        if let refusal = Self.mountRefusal(finding.path, mountPoints: table + resolved) {
             return refusal
         }
-        guard case .run = finding.action else {
-            var item = stat()
-            var homeInfo = stat()
-            if lstat(finding.path, &item) == 0, lstat(home, &homeInfo) == 0, item.st_dev != homeInfo.st_dev {
-                return "It's on a different disk than your home folder."
-            }
-            return nil
+        if case .run = finding.action { return nil }
+        guard let device = deviceOf(finding.path), let homeDevice = deviceOf(home) else {
+            return "Midden couldn't check which disk it's on."
         }
-        return nil
+        return device == homeDevice ? nil : "It's on a different disk than your home folder."
+    }
+
+    /// Mount points with the folders holding them resolved (`/tmp/x` is
+    /// `/private/tmp/x`), so they compare with canonical item paths. The
+    /// mount point itself isn't resolved: that would reach into the mounted
+    /// file system, which can hang. Nil when a folder can't be resolved.
+    static func canonicalMountPoints(_ table: [String]) -> [String]? {
+        var resolved: [String] = []
+        for mountPoint in table {
+            guard mountPoint != "/" else {
+                resolved.append(mountPoint)
+                continue
+            }
+            let parent = (mountPoint as NSString).deletingLastPathComponent
+            guard let folder = try? System.canonicalPath(parent) else { return nil }
+            let name = (mountPoint as NSString).lastPathComponent
+            resolved.append(folder == "/" ? "/" + name : folder + "/" + name)
+        }
+        return resolved
+    }
+
+    static func lstatDevice(_ path: String) -> dev_t? {
+        var info = stat()
+        return lstat(path, &info) == 0 ? info.st_dev : nil
     }
 
     /// Returns nil on success, else what went wrong.
