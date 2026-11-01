@@ -57,6 +57,20 @@ import Synchronization
 ///   to zero while real work remains. It's withheld for the
 ///   first 2 seconds, while the rate is noise, and while the average rate
 ///   isn't positive.
+/// - Counted phases (worktrees) estimate from their own items instead, since
+///   their items are few and uneven: sizing one large worktree outside home
+///   can take seconds while auditing another takes milliseconds. Pacing by
+///   the count said 0.7 s left at 63 of 71 worktrees while the phase ran
+///   another 5 s. Estimating from finished items' durations was worse:
+///   quick items finish first, so it said 0.4 to 2 s while 7 to 9 s
+///   remained. What fit a real trace: the phase's own throughput, time in
+///   the phase times items left over items done (8.5 s shown against 8.8 s
+///   actual half a second in), but never less than half of what the
+///   slowest running item has taken so far, since one that runs long is
+///   probably a slow one. A ticker refreshes it every 250 ms, as no events
+///   arrive while the last items run. At a phase change the median window
+///   restarts, the first estimate isn't capped, and in a counted phase the
+///   cap is looser (50% per second): a slow item is real news, not noise.
 final class ProgressEstimator: Sendable {
     /// Share of the bar where each phase starts, and its width.
     static let shares: [ScanPhase: (start: Double, width: Double)] = [
@@ -73,6 +87,9 @@ final class ProgressEstimator: Sendable {
     /// Fastest the published time left may grow, per second: this share of
     /// it, or 1 s, whichever is more.
     static let maximumGrowth = 0.1
+    /// The growth cap inside counted phases, where estimates are steadier.
+    static let countedGrowth = 0.5
+    static let tick: TimeInterval = 0.25
     /// Fastest the bytes floor may rise, in reading-phase fraction per second.
     static let bytesCatchUp = 0.05
 
@@ -100,9 +117,15 @@ final class ProgressEstimator: Sendable {
         var estimates: [Double] = []
         var remaining: Double?
         var remainingTime: TimeInterval = 0
+        /// The time left was estimated in an earlier phase.
+        var newPhase = false
+        /// Counted phases: when the phase and its running items started.
+        var phaseStart: TimeInterval = 0
+        var itemStarts: [String: TimeInterval] = [:]
     }
 
     private let state = Mutex(State())
+    private let ticking = Atomic<Bool>(false)
     private let expectedBytes: Int64
     private let expectedItems: Int64?
     private let started: TimeInterval
@@ -135,7 +158,48 @@ final class ProgressEstimator: Sendable {
             state.detail = detail
             state.total = total
             state.completed = total == nil ? nil : 0
+            state.estimates = []
+            state.newPhase = true
+            state.itemStarts = [:]
+            state.phaseStart = now()
         }
+        if total != nil { startTicking() } else { ticking.store(false, ordering: .relaxed) }
+    }
+
+    /// An item of a counted phase started, e.g. a worktree being checked.
+    func started(_ item: String) {
+        update { state in
+            state.itemStarts[item] = now()
+        }
+    }
+
+    deinit {
+        ticking.store(false, ordering: .relaxed)
+    }
+
+    private func startTicking() {
+        guard ticking.compareExchange(expected: false, desired: true, ordering: .relaxed).exchanged else {
+            return
+        }
+        Thread { [weak self] in
+            while true {
+                Thread.sleep(forTimeInterval: Self.tick)
+                guard let self, self.ticking.load(ordering: .relaxed) else { return }
+                self.update { _ in }
+            }
+        }.start()
+    }
+
+    /// Time left in a counted phase, from its own throughput.
+    private static func countedRemaining(_ state: State, at time: TimeInterval) -> Double? {
+        // A throughput from the first few items is noise (3 items in half a
+        // second said 18 s for a phase that took 8): wait for a tenth of them.
+        guard let total = state.total, let completed = state.completed,
+            completed >= max(3, total / 10)
+        else { return nil }
+        let throughput = (time - state.phaseStart) * Double(total - completed) / Double(completed)
+        let slowest = state.itemStarts.values.map { time - $0 }.max() ?? 0
+        return max(throughput, slowest * 0.5)
     }
 
     /// Reading progress from the walker.
@@ -171,7 +235,10 @@ final class ProgressEstimator: Sendable {
                 state.phaseFraction = Double(completed) / Double(total)
                 state.phasePace = state.phaseFraction
             }
-            if let path { state.path = path }
+            if let path {
+                state.path = path
+                state.itemStarts[path] = nil
+            }
         }
     }
 
@@ -197,19 +264,27 @@ final class ProgressEstimator: Sendable {
                 state.sampleTime = time
                 state.sampleFraction = state.pace
             }
-            if let rate = state.rate, rate > 0, time - started >= Self.warmUp,
+            let counted = state.total != nil
+            var raw: Double?
+            if counted {
+                raw = Self.countedRemaining(state, at: time)
+            } else if let rate = state.rate, rate > 0 {
+                raw = (1 - state.pace) / rate
+            }
+            if let raw, time - started >= Self.warmUp,
                 state.sampleTime == time  // A new sample was just taken.
             {
-                state.estimates.append((1 - state.pace) / rate)
+                state.estimates.append(raw)
                 if state.estimates.count > Self.window { state.estimates.removeFirst() }
                 let median = state.estimates.sorted()[state.estimates.count / 2]
-                if let previous = state.remaining {
-                    let ceiling = previous
-                        + max(previous * Self.maximumGrowth, 1) * (time - state.remainingTime)
+                if let previous = state.remaining, !state.newPhase {
+                    let growth = counted ? Self.countedGrowth : Self.maximumGrowth
+                    let ceiling = previous + max(previous * growth, 1) * (time - state.remainingTime)
                     state.remaining = min(median, ceiling)
                 } else {
                     state.remaining = median
                 }
+                state.newPhase = false
                 state.remainingTime = time
             }
             let remaining = state.remaining

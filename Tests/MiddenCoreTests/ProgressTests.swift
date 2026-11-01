@@ -134,6 +134,36 @@ private final class Collector: Sendable {
         #expect(abs(fractions.last! - 0.85 * 0.6) < 1e-9)
     }
 
+    @Test func aSlowItemIsNotAlmostDone() throws {
+        let clock = FakeClock()
+        let collector = Collector()
+        let estimator = ProgressEstimator(expectedBytes: 1, now: { clock.now }) { collector.add($0) }
+        clock.advance(3)  // Past the warm-up.
+        estimator.begin(.worktrees, detail: "Checking worktrees", total: 10)
+        // A slow worktree starts first; nine quick ones (0.2 s each) run beside it.
+        estimator.started("slow")
+        for index in 0..<9 {
+            estimator.started("w\(index)")
+            clock.advance(0.2)
+            estimator.step(index + 1, path: "w\(index)")
+        }
+        // Then only the slow one runs, for 3 more seconds (the ticker's updates).
+        for _ in 0..<15 {
+            clock.advance(0.2)
+            estimator.step(9)
+        }
+        let last = try #require(collector.all.last)
+        #expect(last.completed == 9)
+        // 9 of 10 done would say "almost done"; it has run 4.8 s, so expect
+        // at least about half that again.
+        let left = try #require(last.secondsRemaining)
+        #expect(left >= 1.5)
+        // Once it finishes, the phase knows it.
+        clock.advance(0.2)
+        estimator.step(10, path: "slow")
+        #expect(collector.all.last?.completed == 10)
+    }
+
     @Test func scanReportsPhasesInOrder() async throws {
         let home = try TempDir("home")
         try home.write("Library/Caches/com.example.fake/blob", bytes: 2_000_000)

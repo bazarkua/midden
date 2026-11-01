@@ -81,15 +81,18 @@ struct ScanEngine {
         // sized first with the same walker (and dropped if too small), then
         // each is audited. Several run at once, so each walker gets 2 threads.
         let external = ExternalWorktrees.discover(gitDirectories: delegate.gitDirectories, home: home)
+        // Those outside home first: sizing them is the slow part, and
+        // starting it early keeps the tail of the phase short.
         let candidates =
-            worktrees.map { WorktreeCandidate(match: $0.match, size: ($0.bytes, $0.breakdown)) }
-            + external.worktrees.map { WorktreeCandidate(match: $0, size: nil) }
+            external.worktrees.map { WorktreeCandidate(match: $0, size: nil) }
+            + worktrees.map { WorktreeCandidate(match: $0.match, size: ($0.bytes, $0.breakdown)) }
         if !candidates.isEmpty {
             estimator.begin(.worktrees, detail: "Checking worktrees", total: candidates.count)
             let auditor = WorktreeAuditor(
                 processes: .current(), now: now, activeWindow: options.worktreeActiveWindow)
             let finished = Atomic<Int>(0)
             let checked = Background.map(candidates) { candidate -> Finding? in
+                estimator.started(candidate.match.path)
                 defer {
                     estimator.step(finished.add(1, ordering: .relaxed).newValue, path: candidate.match.path)
                 }
