@@ -1,13 +1,18 @@
 import Foundation
 
-// Public entry points of MiddenCore. These are placeholders that define the
-// API front ends build against; the implementations replace them.
+// Public entry points of MiddenCore: the API front ends (the CLI, an app) build against.
 
 public struct ScanOptions: Sendable {
     /// Folder to scan. Defaults to the current user's home.
     public var home: URL
     /// Findings smaller than this are left out of the report.
     public var minimumBytes: Int64
+    /// Walker threads; nil picks a default for this Mac.
+    var threadCount: Int?
+    /// Build folders whose project changed more recently are "review".
+    var projectIdleWindow: TimeInterval = Findings.projectIdleWindow
+    /// Worktrees used more recently are "review".
+    var worktreeActiveWindow: TimeInterval = 7 * 86_400
 
     public init(
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -35,7 +40,15 @@ public struct Scanner: Sendable {
     public func scan(
         progress: @escaping @Sendable (ScanProgress) -> Void = { _ in }
     ) async throws -> ScanReport {
-        throw MiddenError.notImplemented
+        let engine = ScanEngine(options: options)
+        let cancellation = CancellationFlag()
+        return try await withTaskCancellationHandler {
+            try await Background.run {
+                try engine.run(progress: progress, cancellation: cancellation)
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 }
 

@@ -116,11 +116,7 @@ final class Walker<Delegate: WalkDelegate>: Sendable {
     private let unreadable = Atomic<Int>(0)
     private let lastProgress = Atomic<UInt64>(0)
 
-    static var defaultThreadCount: Int {
-        min(max(ProcessInfo.processInfo.activeProcessorCount, 4), 12)
-    }
-
-    init(root: String, delegate: Delegate, threadCount: Int = Walker.defaultThreadCount) {
+    init(root: String, delegate: Delegate, threadCount: Int = WalkDefaults.threadCount) {
         self.root = root
         self.delegate = delegate
         self.threadCount = max(threadCount, 1)
