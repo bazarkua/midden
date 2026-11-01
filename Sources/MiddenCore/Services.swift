@@ -66,10 +66,36 @@ public struct Cleaner: Sendable {
         _ ids: [String],
         progress: @escaping @Sendable (CleanResult) -> Void = { _ in }
     ) async -> CleanSummary {
-        CleanSummary(
-            results: ids.map { CleanResult(id: $0, ok: false, message: "Not implemented") },
-            freeBefore: 0,
-            freeAfter: 0
-        )
+        let home = self.home
+        let summary = try? await Background.run { () -> CleanSummary in
+            let freeBefore = System.diskSpace(home.path).free
+            guard let engine = try? CleanEngine(home: home) else {
+                let results = ids.map { CleanResult(id: $0, ok: false, message: "Can't read the home folder.") }
+                results.forEach(progress)
+                return CleanSummary(results: results, freeBefore: freeBefore, freeAfter: freeBefore)
+            }
+            var results: [CleanResult] = []
+            for id in ids {
+                let result = engine.clean(id)
+                progress(result)
+                results.append(result)
+            }
+            return CleanSummary(
+                results: results, freeBefore: freeBefore, freeAfter: System.diskSpace(home.path).free)
+        }
+        return summary ?? CleanSummary(results: [], freeBefore: 0, freeAfter: 0)
+    }
+
+    /// What cleaning each id would do, checked the same way `clean` checks
+    /// it, without deleting anything. Shown to the user before they confirm.
+    public func plan(_ ids: [String]) async -> [CleanPlan] {
+        let home = self.home
+        let plans = try? await Background.run { () -> [CleanPlan] in
+            guard let engine = try? CleanEngine(home: home) else {
+                return ids.map { CleanPlan(id: $0, finding: nil, refusal: "Can't read the home folder.") }
+            }
+            return ids.map(engine.plan)
+        }
+        return plans ?? []
     }
 }
