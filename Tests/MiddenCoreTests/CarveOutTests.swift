@@ -179,6 +179,65 @@ func runScript(_ script: String, from directory: String) throws -> Process {
         #expect(pathExists(home.path(profile + "/Default/Login Data")))
     }
 
+    // MARK: Homebrew
+
+    static let brew = "Library/Caches/Homebrew"
+
+    private func makeBrewHome() throws -> TempDir {
+        let home = try TempDir("home")
+        let bottle = try home.write(
+            Self.brew + "/downloads/0123abcd--wget-1.24.5.arm64_sequoia.bottle.tar.gz", bytes: 300_000)
+        try home.write(Self.brew + "/api/formula.jws.json", bytes: 200_000)
+        try home.write(Self.brew + "/bootsnap/0a/1b2c", bytes: 100_000)
+        try home.mkdir(Self.brew + "/Cask")
+        try FileManager.default.createSymbolicLink(
+            atPath: home.path(Self.brew + "/wget--1.24.5.arm64_sequoia.bottle.tar.gz"), withDestinationPath: bottle)
+        return home
+    }
+
+    /// Only downloads/ is cleaned: wiping api/ and bootsnap/ makes the next
+    /// `brew` run slow, and they aren't downloads of packages.
+    @Test func homebrewCleansOnlyItsDownloads() async throws {
+        let home = try makeBrewHome()
+        let byPath = try await scanFindings(home, processes: ProcessUsage(processes: []))
+        let downloads = try #require(byPath[home.path(Self.brew + "/downloads")])
+        #expect(downloads.safety == .safe)
+        #expect(downloads.action == .removeContents)
+        #expect(!downloads.explanation.contains("cleanup -s"))
+        let parent = try #require(byPath[home.path(Self.brew)])
+        #expect(parent.safety == .info)
+
+        let results = await testCleaner(home).clean([Self.brew + "/downloads", Self.brew].map(home.path)).results
+        #expect(results.map(\.ok) == [true, false], "\(results)")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: home.path(Self.brew + "/downloads")).isEmpty)
+        #expect(pathExists(home.path(Self.brew + "/api/formula.jws.json")))
+        #expect(pathExists(home.path(Self.brew + "/bootsnap/0a/1b2c")))
+        #expect(pathExists(home.path(Self.brew + "/Cask")))
+        #expect(pathExists(home.path(Self.brew + "/wget--1.24.5.arm64_sequoia.bottle.tar.gz")))
+    }
+
+    /// An unfinished download is Review; one a program is writing keeps
+    /// the folder until it's done.
+    @Test func anActiveHomebrewDownloadKeepsTheFolder() async throws {
+        let home = try makeBrewHome()
+        let partial = try home.write(Self.brew + "/downloads/4567cdef--node-22.1.0.bottle.tar.gz.incomplete", bytes: 50_000)
+        let idle = try await scanFindings(home, processes: ProcessUsage(processes: []))
+        let unfinished = try #require(idle[home.path(Self.brew + "/downloads")])
+        #expect(unfinished.safety == .review)
+        #expect(unfinished.explanation.contains("unfinished"))
+
+        // curl writing the download names it in its arguments.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "while :; do sleep 0.2; done", "curl", "--output", partial]
+        try process.run()
+        defer { process.terminate() }
+        let result = try #require(await testCleaner(home).clean([home.path(Self.brew + "/downloads")]).results.first)
+        #expect(!result.ok)
+        #expect(result.message?.contains("Quit") == true, "\(result)")
+        #expect(pathExists(partial))
+    }
+
     // MARK: llama.cpp
 
     /// llama.cpp downloads models into ~/Library/Caches/llama.cpp, and

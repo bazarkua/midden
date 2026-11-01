@@ -39,6 +39,8 @@ struct Rule: Sendable {
         /// A Chromium profile folder: a `Local State` file, or the `mcp-`
         /// prefix Playwright MCP gives its profiles.
         case browserProfile
+        /// A download in progress or interrupted: an `.incomplete` file.
+        case unfinishedDownload
     }
 }
 
@@ -553,15 +555,43 @@ enum RuleCatalog {
                 """,
             action: .removeDirectory,
             checkInUse: true),
+        // Homebrew's cache (`brew --cache`). Only downloads/ is cleaned:
+        // api/ and bootsnap/ make `brew` itself fast (a comment in Mole's
+        // cleaner says wiping them slowed its next run). `brew cleanup -s`
+        // is not the same thing: it keeps downloads of installed formulae and
+        // casks (`brew cleanup --help`).
         Rule(
             paths: ["Library/Caches/Homebrew"],
+            category: .appCaches, safety: .info,
+            title: "Homebrew cache", group: "Homebrew",
+            explanation: """
+                Homebrew's cache: the packages it downloaded, listed separately, and data that \
+                makes `brew` start faster, which Midden leaves alone. Midden never deletes this \
+                folder as a whole.
+                """,
+            action: .manual("Run `brew cleanup` to let Homebrew remove what it no longer needs.")),
+        Rule(
+            paths: ["Library/Caches/Homebrew/downloads"],
+            category: .appCaches, safety: .review,
+            title: "Homebrew downloads", group: "Homebrew",
+            explanation: """
+                Packages Homebrew downloaded. One download is unfinished: Homebrew is \
+                downloading it now, or a download was interrupted. Homebrew downloads a package \
+                again if it needs it, for example to reinstall.
+                """,
+            action: .removeContents,
+            checkInUse: true,
+            requires: .unfinishedDownload),
+        Rule(
+            paths: ["Library/Caches/Homebrew/downloads"],
             category: .appCaches, safety: .safe,
             title: "Homebrew downloads", group: "Homebrew",
             explanation: """
-                Packages Homebrew downloaded and kept after installing them. Deleting them is \
-                similar to `brew cleanup -s`; Homebrew downloads them again if it needs them.
+                Packages Homebrew downloaded. Homebrew downloads a package again if it needs it, \
+                for example to reinstall.
                 """,
-            action: .removeContents),
+            action: .removeContents,
+            checkInUse: true),
         // llama.cpp downloads models (`-hf`) to LLAMA_CACHE, by default
         // ~/Library/Caches/llama.cpp on macOS (fs_get_cache_directory in
         // common/common.cpp). People save their own models there too.
@@ -892,6 +922,8 @@ enum RuleCatalog {
         case .browserProfile:
             folder.name.hasPrefix("mcp-")
                 || folder.entries.contains { $0.name == "Local State" && $0.kind == .file }
+        case .unfinishedDownload:
+            folder.entries.contains { $0.name.hasSuffix(".incomplete") }
         }
     }
 

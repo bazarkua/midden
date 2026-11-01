@@ -26,7 +26,8 @@ import Testing
         Case(path: ".cache/huggingface", title: "Hugging Face models", safety: .info),
         Case(path: ".cache/gitstatus", title: "~/.cache/{name}", safety: .review, wildcard: "gitstatus"),
         Case(path: "Library/Caches/pip", title: "pip cache", safety: .safe),
-        Case(path: "Library/Caches/Homebrew", title: "Homebrew downloads", safety: .safe),
+        Case(path: "Library/Caches/Homebrew", title: "Homebrew cache", safety: .info),
+        Case(path: "Library/Caches/Homebrew/downloads", title: "Homebrew downloads", safety: .safe),
         // A cache folder Midden has no owner-specific rule for is Review:
         // being in Caches doesn't prove its owner rebuilds it.
         Case(path: "Library/Caches/com.spotify.client", title: "{app} cache", safety: .review,
