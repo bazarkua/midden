@@ -138,12 +138,9 @@ enum Command {
         // Only stdin, stdout and stderr reach the child.
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
 
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = searchPath.joined(separator: ":")
-        for (name, value) in environmentOverrides.withLock({ $0 }) {
-            environment[name] = value
-        }
-        environment.merge(extra) { _, new in new }
+        let environment = Self.environment(
+            inherited: ProcessInfo.processInfo.environment,
+            overrides: environmentOverrides.withLock { $0 }, extra: extra)
         let argv = ([executable] + arguments.dropFirst()).map { strdup($0) } + [nil]
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer {
@@ -225,6 +222,32 @@ enum Command {
             status: exited && !killed ? (status >> 8) & 0xff : -1,
             output: String(decoding: collected[0], as: UTF8.self),
             error: killed ? "Timed out after \(Int(timeout)) seconds. " + error : error)
+    }
+
+    /// Inherited variables that never reach a command. They choose which
+    /// repository, work tree, index or object store git works on, or add
+    /// configuration. Exported by a git hook, an alias or a shell that
+    /// started Midden, they'd make `git -C <worktree> status` check another
+    /// repository and call a dirty worktree clean.
+    static let removedVariables: Set<String> = [
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+        "GIT_CONFIG_PARAMETERS",
+    ]
+
+    /// The environment a command runs with: Midden's own without
+    /// `removedVariables`, PATH extended, then the overrides, then the
+    /// command's extra variables.
+    static func environment(
+        inherited: [String: String], overrides: [String: String?], extra: [String: String]
+    ) -> [String: String] {
+        var environment = inherited.filter { !removedVariables.contains($0.key) }
+        environment["PATH"] = searchPath.joined(separator: ":")
+        for (name, value) in overrides {
+            environment[name] = value
+        }
+        environment.merge(extra) { _, new in new }
+        return environment
     }
 
     private static func failure(_ code: Int32) -> CommandResult {

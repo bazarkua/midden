@@ -70,3 +70,50 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
         #expect(detail.hasPrefix("2 changed or untracked files"), "\(detail)")
     }
 }
+
+@Suite struct GitEnvironmentTests {
+    /// Started from a git hook, an alias or a shell that exported them,
+    /// Midden would inherit variables that make `git -C <worktree> status`
+    /// look at another repository or index, or add configuration that
+    /// hides changes. None of them may reach the commands it runs.
+    @Test func inheritedRepositoryVariablesDontReachGit() {
+        let inherited = [
+            "HOME": "/Users/me", "LANG": "en_US.UTF-8",
+            "GIT_DIR": "/Users/me/other/.git", "GIT_WORK_TREE": "/Users/me/other",
+            "GIT_INDEX_FILE": "/Users/me/other/.git/index",
+            "GIT_OBJECT_DIRECTORY": "/Users/me/other/.git/objects",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": "/Users/me/other/.git/objects",
+            "GIT_COMMON_DIR": "/Users/me/other/.git", "GIT_NAMESPACE": "ns",
+            "GIT_CONFIG_PARAMETERS": "'status.showuntrackedfiles'='no'",
+        ]
+        let environment = Command.environment(inherited: inherited, overrides: [:], extra: Command.quietGit)
+        for name in inherited.keys where name.hasPrefix("GIT_") {
+            #expect(environment[name] == nil, "\(name)")
+        }
+        #expect(environment["HOME"] == "/Users/me")
+        #expect(environment["LANG"] == "en_US.UTF-8")
+        #expect(environment["GIT_CONFIG_KEY_1"] == "status.showUntrackedFiles")
+        #expect(environment["GIT_OPTIONAL_LOCKS"] == "0")
+    }
+
+    /// What such variables do when they get through: a dirty worktree reads
+    /// as clean, because git checks the other repository.
+    @Test func gitDirInTheEnvironmentHidesAWorktreesChanges() throws {
+        let home = try TempDir("home")
+        let other = try makeRepository(home, "other")
+        let repository = try makeRepository(home)
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        try home.write("worktrees/feature/unsaved.txt", text: "draft")
+
+        func status(_ environment: [String: String]) -> CommandResult {
+            Command.run(
+                ["git", "-C", worktree, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                environment: environment)
+        }
+        // Passed as `extra`, the variables reach git the way inherited ones did.
+        let redirected = status(Command.quietGit.merging(["GIT_DIR": other + "/.git", "GIT_WORK_TREE": other]) { $1 })
+        #expect(redirected.succeeded)
+        #expect(!redirected.output.contains("unsaved.txt"))
+        #expect(status(Command.quietGit).output.contains("unsaved.txt"))
+    }
+}
