@@ -199,4 +199,21 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         let fallback = try #require(WorktreeAuditor.lastActivity(gitDir: dir.path("other")))
         #expect(abs(fallback.timeIntervalSinceNow) < 120)
     }
+
+    @Test func orphanedWorktreeIsExplained() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home, "gone-repo")
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        try FileManager.default.removeItem(atPath: repository)
+
+        let result = try audit(home, worktree)
+        #expect(result.safety == .info)
+        #expect(result.repositoryName == "gone-repo")
+        #expect(check(result, "Its repository exists")?.passed == false)
+        guard case .manual(let instructions) = result.action else {
+            Issue.record("an orphan must not be removable")
+            return
+        }
+        #expect(instructions.contains("delete the folder in Finder"))
+    }
 }

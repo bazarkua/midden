@@ -85,6 +85,24 @@ struct WorktreeAuditor: Sendable {
                 steps: ["install Git (`xcode-select --install`) and scan again"],
                 repository: nil)
         }
+        // An orphan: the repository it belonged to was deleted or moved, so
+        // git can neither check it nor remove it.
+        var info = stat()
+        if !worktree.gitDir.isEmpty, lstat(worktree.gitDir, &info) != 0 {
+            let repositoryGitDir = ((worktree.gitDir as NSString).deletingLastPathComponent as NSString)
+                .deletingLastPathComponent
+            let repositoryPath = (repositoryGitDir as NSString).lastPathComponent == ".git"
+                ? (repositoryGitDir as NSString).deletingLastPathComponent : repositoryGitDir
+            return WorktreeAudit(
+                repositoryName: (repositoryPath as NSString).lastPathComponent, repository: nil,
+                branch: nil,
+                checks: [SafetyCheck(
+                    title: "Its repository exists", passed: false,
+                    detail: "Its .git file points into \(repositoryPath), which no longer exists, so nothing can check it for uncommitted work.")],
+                safety: .info,
+                action: .manual("Git can't remove it because its repository is gone. If you don't need its files, delete the folder in Finder."),
+                lastActivity: lastActivity)
+        }
         // Optional locks off: `git status` must not rewrite the index of a
         // worktree we're only looking at.
         func run(_ arguments: String...) -> CommandResult {
