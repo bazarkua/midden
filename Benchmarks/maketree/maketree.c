@@ -15,7 +15,11 @@
 //   Work/deep/       a chain of 100 nested folders
 //   Work/links/      symlinks a scanner must not follow: to /, to ., dangling
 //
-// Usage: maketree [--seed N] [--scale F] [--dry-run] DIR
+// Two more shapes test the extremes on their own:
+//   --shape flat   one folder of 1,000,000 entries (90% empty files)
+//   --shape deep   100 chains of 1,000 nested folders, deeper than PATH_MAX
+//
+// Usage: maketree [--shape home|flat|deep] [--seed N] [--scale F] [--dry-run] DIR
 //   --scale F   multiply every count by F (0.01 makes a quick test tree)
 //   --dry-run   create nothing, print what would be made
 //
@@ -489,35 +493,60 @@ static void sparse_file(const char *name) {
     pop(mark);
 }
 
-int main(int argc, char **argv) {
-    uint64_t seed = 20261101;
-    const char *root = NULL;
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
-            seed = strtoull(argv[++i], NULL, 10);
-        } else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
-            scale = strtod(argv[++i], NULL);
-        } else if (strcmp(argv[i], "--dry-run") == 0) {
-            dry_run = true;
-        } else if (argv[i][0] != '-' && !root) {
-            root = argv[i];
-        } else {
-            root = NULL;
-            break;
+// MARK: The three shapes
+
+// --shape flat: one folder with a million entries, 90% of them empty files.
+static void flat_tree(void) {
+    size_t mark = dir("flat");
+    long count = scaled(1000000);
+    for (long i = 0; i < count; i++) filef(unit() < 0.9 ? 0 : 1 + (long)below(4000), "item-%07ld", i);
+    pop(mark);
+}
+
+// --shape deep: 100 chains of 1,000 nested folders, a small file every 10
+// levels. Past about 500 levels a chain's path is longer than PATH_MAX
+// (1,024 bytes), which open() by path can't reach; mkdirat and openat can.
+static void deep_tree(void) {
+    size_t mark = dir("deep");
+    int top = dry_run ? -1 : open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (!dry_run && top < 0) die("open");
+    long chains = scaled(100);
+    for (long chain = 0; chain < chains; chain++) {
+        char name[32];
+        snprintf(name, sizeof(name), "chain-%03ld", chain);
+        int fd = top;
+        bool owned = false;
+        for (int level = 0; level <= 1000; level++) {
+            const char *folder = level == 0 ? name : "d";
+            if (!dry_run) {
+                if (mkdirat(fd, folder, 0755) != 0) die("mkdirat");
+                int inner = openat(fd, folder, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+                if (inner < 0) die("openat");
+                if (owned) close(fd);
+                fd = inner;
+                owned = true;
+            }
+            made.dirs++;
+            if (level % 10 == 0) {
+                long size = 1 + (long)below(4000);
+                if (!dry_run) {
+                    int file = openat(fd, "f.txt", O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+                    if (file < 0 || write(file, content, (size_t)size) != size || close(file) != 0) {
+                        die("write in a chain");
+                    }
+                }
+                made.files++;
+                made.bytes += size;
+            }
         }
+        if (owned) close(fd);
     }
-    if (!root || scale <= 0) {
-        fprintf(stderr, "usage: maketree [--seed N] [--scale F] [--dry-run] DIR\n");
-        return 2;
-    }
-    state = seed;
-    for (size_t i = 0; i < sizeof(content); i++) content[i] = (char)(next() & 0x7f);
+    if (top >= 0) close(top);
+    pop(mark);
+}
 
-    // The root itself isn't counted: scanners report what is inside it.
-    snprintf(path, sizeof(path), "%s", root);
-    path_length = strlen(path);
-    if (!dry_run && mkdir(path, 0755) != 0) die("mkdir (it must not exist yet)");
-
+// --shape home (the default): the developer's home folder described above.
+static void home_tree(void) {
     pnpm_store();
 
     size_t work = dir("Work");
@@ -561,6 +590,43 @@ int main(int argc, char **argv) {
     size_t datasets = dir("datasets");
     for (int i = 0; i < 4; i++) filef(scaled(100000000), "sample-%d.bin", i);
     pop(datasets);
+}
+
+int main(int argc, char **argv) {
+    uint64_t seed = 20261101;
+    const char *root = NULL, *shape = "home";
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+            seed = strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
+            scale = strtod(argv[++i], NULL);
+        } else if (strcmp(argv[i], "--shape") == 0 && i + 1 < argc) {
+            shape = argv[++i];
+        } else if (strcmp(argv[i], "--dry-run") == 0) {
+            dry_run = true;
+        } else if (argv[i][0] != '-' && !root) {
+            root = argv[i];
+        } else {
+            root = NULL;
+            break;
+        }
+    }
+    bool known = !strcmp(shape, "home") || !strcmp(shape, "flat") || !strcmp(shape, "deep");
+    if (!root || scale <= 0 || !known) {
+        fprintf(stderr, "usage: maketree [--shape home|flat|deep] [--seed N] [--scale F] [--dry-run] DIR\n");
+        return 2;
+    }
+    state = seed;
+    for (size_t i = 0; i < sizeof(content); i++) content[i] = (char)(next() & 0x7f);
+
+    // The root itself isn't counted: scanners report what is inside it.
+    snprintf(path, sizeof(path), "%s", root);
+    path_length = strlen(path);
+    if (!dry_run && mkdir(path, 0755) != 0) die("mkdir (it must not exist yet)");
+
+    if (!strcmp(shape, "flat")) flat_tree();
+    else if (!strcmp(shape, "deep")) deep_tree();
+    else home_tree();
 
     long long entries = made.dirs + made.files + made.symlinks + made.hard_links;
     printf("%s%lld entries: %lld folders, %lld files, %lld symlinks, %lld hard links; "
