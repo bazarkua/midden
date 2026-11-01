@@ -30,10 +30,24 @@ enum Findings {
             template.replacingOccurrences(of: "{name}", with: name)
                 .replacingOccurrences(of: "{app}", with: appLabel)
         }
+        var safety = rule.safety
+        var explanation = fill(rule.explanation)
+        var action = rule.action
+        // A container is never removed as a whole. A rule written for one
+        // says so itself; a wildcard that matched one (a cache folder
+        // holding a folder another rule names) gets this instead.
+        if match.isContainer, rule.action.isAutomatic {
+            safety = .info
+            explanation += """
+                 Parts of this folder are listed separately, so Midden never deletes it as a \
+                whole; this item is what's left.
+                """
+            action = .manual("Clean the parts Midden lists separately, or remove the rest by hand in Finder.")
+        }
         return Finding(
             id: path, category: rule.category, title: fill(rule.title), path: path,
-            group: fill(rule.group), bytes: bytes, safety: rule.safety,
-            explanation: fill(rule.explanation), action: rule.action, app: app,
+            group: fill(rule.group), bytes: bytes, safety: safety,
+            explanation: explanation, action: action, app: app,
             breakdown: breakdown)
     }
 

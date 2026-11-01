@@ -175,16 +175,25 @@ struct CleanEngine {
             return refuse("It no longer exists.")
         case .notScanned(let reason):
             return refuse(reason)
+        case .inside(let ancestor, .rule(let container)?) where container.isContainer:
+            return refuse("It's inside \(ancestor), and Midden only cleans the parts of that folder it lists separately.")
         case .inside(let ancestor, _):
             return refuse("It's inside \(ancestor), which Midden treats as one item.")
         case .file(let match?, let entry, _):
             return .success(Findings.file(match, path: path, entry: entry))
         case .file(nil, _, _), .directory(nil, _):
             return refuse("Midden doesn't recognize it as something it can clean.")
-        case .directory(let match?, _):
-            let bytes = (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
+        case .directory(let match?, let dir):
+            var bytes = (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
             switch match {
             case .rule(let rule):
+                // A container shows only what no finding inside it covers,
+                // as the scan did. It's refused below either way.
+                if rule.isContainer, let relative = dir.relative,
+                    let remainder = Containers.remainder(of: path, relative: relative, scope: dir.scope, parent: dir.parent)
+                {
+                    bytes = remainder
+                }
                 return .success(Findings.rule(rule, path: path, bytes: bytes))
             case .buildFolder(let build):
                 return .success(Findings.buildFolder(build, path: path, bytes: bytes))

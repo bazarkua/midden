@@ -15,6 +15,10 @@ struct Scope: Sendable, Hashable {
     var inLibrary = false
     /// Inside a top-level hidden folder such as ~/.vscode or ~/.nvm.
     var inDotFolder = false
+    /// Inside a container (a rule's folder that other rules match folders
+    /// in): only those rules apply here, and whatever they don't match
+    /// belongs to the container.
+    var owned = false
 }
 
 /// What a directory's listing tells about it as a project, for classifying
@@ -123,9 +127,20 @@ enum Classifier {
             inner.claimed = true
             return (nil, inner)
         }
-        if let relative = dir.relative, let match = RuleCatalog.match(relative) {
-            if match.rule.claimsSubtree { inner.claimed = true }
+        if let relative = dir.relative, var match = RuleCatalog.match(relative) {
+            if RuleCatalog.hasNestedRules(below: relative) {
+                match.isContainer = true
+                inner.owned = true
+            } else if match.rule.claimsSubtree {
+                inner.claimed = true
+            }
             return (.rule(match), inner)
+        }
+        if inner.owned {
+            // Not a rule's folder: part of the container, unless a rule
+            // can still match further down.
+            if !(dir.relative.map(RuleCatalog.hasNestedRules(below:)) ?? false) { inner.claimed = true }
+            return (nil, inner)
         }
         if let gitDir = worktreeGitDir(dir) {
             inner.claimed = true
@@ -212,7 +227,7 @@ enum Classifier {
 
     /// Classifies a file, given the scope of the directory holding it.
     static func classifyFile(_ entry: DirectoryEntry, in scope: Scope) -> FileMatch? {
-        guard entry.kind == .file, !scope.claimed, !scope.inLibrary,
+        guard entry.kind == .file, !scope.claimed, !scope.owned, !scope.inLibrary,
             entry.allocatedSize >= installerBytes
         else { return nil }
         if installerExtensions.contains((entry.name as NSString).pathExtension.lowercased()) {
@@ -254,6 +269,8 @@ extension Classifier {
 
         var path = home
         var scope = Scope()
+        /// The innermost container passed on the way down.
+        var container: (path: String, match: DirectoryMatch)?
         var entries = try reader.entries(atPath: home)
         var facts = ProjectFacts(entries: entries)
         for (index, name) in relative.enumerated() {
@@ -284,8 +301,13 @@ extension Classifier {
                 relative: childRelative.count <= RuleCatalog.maxDepth ? childRelative : nil,
                 scope: scope, parent: facts, entries: childEntries)
             let (match, inner) = classify(dir)
+            // Inside a container, a folder no rule names is part of it.
+            if scope.owned, case .none = match, let container {
+                if isLast || inner.claimed { return .inside(ancestor: container.path, container.match) }
+            }
             if isLast { return .directory(match, dir) }
             if inner.claimed && !scope.claimed { return .inside(ancestor: path, match) }
+            if case .rule(let rule)? = match, rule.isContainer { container = (path, .rule(rule)) }
             scope = inner
             facts = ProjectFacts(entries: childEntries)
             entries = childEntries

@@ -28,6 +28,11 @@ struct RuleMatch: Sendable {
     var rule: Rule
     /// The folder name the `*` matched, if the rule has one.
     var wildcard: String?
+    /// Other rules match folders inside this one (renv's cache inside R's
+    /// cache folder). The scanner keeps classifying inside it, its finding
+    /// is only what no other finding covers, and Midden never removes it as
+    /// a whole, so nothing protected inside can go with it.
+    var isContainer = false
 }
 
 enum RuleCatalog {
@@ -479,6 +484,28 @@ enum RuleCatalog {
                 similar to `brew cleanup -s`; Homebrew downloads them again if it needs them.
                 """,
             action: .removeContents),
+        // R packages keep their caches in R_user_dir("<package>", "cache"),
+        // here on macOS. renv's is a package library that every renv
+        // project links into, so it's never removed with its parent.
+        Rule(
+            paths: ["Library/Caches/org.R-project.R"],
+            category: .appCaches, safety: .info,
+            title: "R package caches", group: "R",
+            explanation: """
+                Caches that R packages keep. renv's package cache, which your R projects use, \
+                is listed separately and kept, so Midden never deletes this folder as a whole.
+                """,
+            action: .manual("Clear a package's cache with that package's own functions, such as `renv::clean()` for renv.")),
+        Rule(
+            paths: ["Library/Caches/org.R-project.R/R/renv"],
+            category: .packageCaches, safety: .info,
+            title: "renv package cache", group: "R",
+            explanation: """
+                The packages renv installed for your R projects, kept once and linked into each \
+                project's library. Deleting it breaks every project that links to it until you \
+                reinstall their packages.
+                """,
+            action: .manual("Remove packages no project uses with `renv::clean()` in a project, or `renv::purge()`.")),
         Rule(
             paths: ["Library/Caches/*"],
             category: .appCaches, safety: .safe,
@@ -568,6 +595,18 @@ enum RuleCatalog {
 
     /// Directories deeper than this, relative to home, can't match a rule.
     static let maxDepth = patterns.map(\.components.count).max() ?? 0
+
+    /// Whether any rule matches a folder strictly inside `relative`, so a
+    /// folder there must stay a container.
+    static func hasNestedRules(below relative: [String]) -> Bool {
+        guard !relative.isEmpty, relative.count < maxDepth else { return false }
+        return patterns.contains { pattern in
+            pattern.components.count > relative.count
+                && zip(pattern.components, relative).allSatisfy { expected, actual in
+                    expected == "*" ? !isAppleOwned(actual) : expected == actual
+                }
+        }
+    }
 
     /// The first rule matching a directory, given its path components
     /// relative to the home folder.

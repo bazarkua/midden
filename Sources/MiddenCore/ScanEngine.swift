@@ -73,16 +73,27 @@ struct ScanEngine {
         let devicesFolder = Simulators.devicesFolder(home: home)
         var simulatorSizes: [String: Int64] = [:]
 
+        // Findings inside a container cover part of it; its own finding is
+        // the rest.
+        let remainders = Containers.remainders(walk.marked.compactMap { directory in
+            guard let match = directory.mark else { return nil }
+            var isContainer = false
+            if case .rule(let rule) = match { isContainer = rule.isContainer }
+            return Containers.Sized(
+                path: directory.path, total: directory.total, isContainer: isContainer,
+                children: isContainer ? directory.children : [])
+        })
         for directory in walk.marked {
             guard let match = directory.mark else { continue }
-            let total = directory.total
+            let remainder = remainders[directory.path]
+            let total = remainder?.bytes ?? directory.total
             if directory.path == devicesFolder {
                 for child in directory.children where child.isDirectory {
                     simulatorSizes[child.name] = child.bytes
                 }
             }
             guard total >= minimum else { continue }
-            let breakdown = Findings.breakdown(total: total, children: directory.children)
+            let breakdown = Findings.breakdown(total: total, children: remainder?.children ?? directory.children)
             switch match {
             case .rule(let rule):
                 findings.append(Findings.rule(rule, path: directory.path, bytes: total, breakdown: breakdown))
