@@ -156,7 +156,7 @@ final class NestedContent: Sendable {
         }
         if found.checkoutCount > 0 {
             let one = found.checkoutCount == 1
-            details.append("\(list(found.checkouts, found.checkoutCount)) \(one ? "is a package checkout" : "are package checkouts") SwiftPM or Xcode made. \(one ? "It's" : "They're") cloned again when needed, but edits made in \(one ? "it" : "them") would be lost.")
+            details.append("\(list(found.checkouts, found.checkoutCount)) \(one ? "is a package checkout" : "are package checkouts") SwiftPM or Xcode made. \(one ? "It's" : "They're") cloned again when needed, but edits and commits made in \(one ? "it" : "them") would be lost.")
         }
         if found.environmentCount > 0 {
             details.append("It holds a Python virtual environment (\(list(found.environments, found.environmentCount))). Packages installed into it by hand aren't recorded anywhere.")
