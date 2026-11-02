@@ -30,10 +30,10 @@ The disk on my Mac was 97% full. The biggest single cause was 117 old worktrees 
 
 | | Examples | How Midden decides |
 |---|---|---|
-| Git worktrees | `.claude/worktrees`, `~/.codex/worktrees`, agent worktrees in `/tmp` | Seven checks: uncommitted changes, ignored files, changes hidden from git, commit on a branch, locked, in use by a program, last used |
-| Build folders | `node_modules`, `target`, `.next`, `.venv`, `Pods`, SwiftPM's `.build` | Only when the project file sits next to it. Safe once the project has been idle for 14 days. In `.build`, Midden keeps what `swift package clean` keeps. Python environments are found by their `pyvenv.cfg` under any name, even one a build folder has, and are always Review |
-| Developer tools | Xcode DerivedData and device support, simulators whose runtime is gone, extension versions VS Code marked for removal | Xcode rebuilds or copies them again. The newest device support version per platform is Review. Android images and Docker data are explained, not deleted |
-| Package caches | npm, Gradle, Cargo, uv, pip, CocoaPods, Yarn, Go, Poetry's downloads and pnpm's metadata | Downloaded again when a project needs them. Gradle's caches only while no Gradle daemon or build runs. Poetry's virtual environments and `pnpm dlx` packages are Review. renv's package library is never deleted |
+| Git worktrees | `.claude/worktrees`, `~/.codex/worktrees`, agent worktrees in `/tmp` | Thirteen checks: uncommitted changes, ignored files, changes hidden from git, submodules, work stopped halfway, commit on a branch, commits only the worktree remembers, commits in origin's main branch, complete history, git filters, locked, in use by a program, last used. Safe only when every commit is in origin's main branch as this Mac last fetched it. Midden never contacts origin, never runs a repository's filter programs and never forces a removal |
+| Build folders | `node_modules`, `target`, `.next`, `.venv`, `Pods`, SwiftPM's `.build` | Only when the project file sits next to it. Review: package managers reinstall what the lockfile lists, but Midden doesn't yet check these folders for edited files or anything else kept in them. SwiftPM's `.build` is Safe once the project has been idle for 14 days, and Midden keeps what `swift package clean` keeps. Python environments are found by their `pyvenv.cfg` under any name, even one a build folder has, and are always Review |
+| Developer tools | Xcode DerivedData and device support, simulators whose runtime is gone, extension versions VS Code marked for removal | Xcode rebuilds or copies them again. Simulators whose runtime is gone are Review: deleting one deletes its apps and data, and a runtime can be missing only for a while. The newest device support version per platform is Review. Android images and Docker data are explained, not deleted |
+| Package caches | npm, Gradle, Cargo, uv, pip, CocoaPods, Yarn, Go, Poetry's downloads and pnpm's metadata | Downloaded again when a project needs them. Gradle's caches only while no Gradle daemon or build runs. Poetry's virtual environments, `pnpm dlx` packages and CocoaPods spec repos are Review. uv's cache is left to `uv cache clean`, because uv says deleting it by hand is never safe. renv's package library is never deleted |
 | App caches | `~/Library/Caches`, web caches of Electron apps, browsers' offline site data | Safe only for owners Midden knows, such as browsers' disk caches and Homebrew's downloads. Any other folder in Caches is Review, because being there doesn't prove it can be rebuilt. Browser profiles and offline site data are Review. Midden asks you to quit the app first |
 | Logs and Trash | `~/Library/Logs`, the Trash | Only log files older than 7 days are deleted, and every folder stays. Emptying the Trash is Review |
 | AI tool data | `~/.claude`, `~/.codex`, Cursor, Antigravity, Gemini CLI, Ollama and llama.cpp models | Conversation history, settings and models are explained, never deleted |
@@ -82,20 +82,36 @@ Without Full Disk Access the scan leaves out the folders macOS guards with a per
 
 ```text
 $ midden scan
-Scanned ~ in 0.1 s: 96 items, 403.2 MB on disk.
+Scanned ~ in 0.2 s: 697 items, 453.5 MB on disk.
 
-Git worktrees  64.0 MB in 1 item
-  SAFE    64.0 MB   Claude Code worktree agent-7f3c2a (fix-login-redirect)
+Git worktrees  129.6 MB in 2 items
+  REVIEW  65.2 MB   Claude Code worktree agent-3b91e0 (add-dark-mode)
+                  ~/Code/acme-app/.claude/worktrees/agent-3b91e0
+                  A second checkout of the “acme-app” repository that Claude Code made for a
+                  parallel task: it's in a .claude/worktrees folder, where Claude Code puts the
+                  worktrees it creates. Removing it deletes this folder only; the branch
+                  “add-dark-mode” and its commits stay in the repository, but Midden couldn't
+                  confirm the commits are stored anywhere else.
+                  ✗ Its commits are in origin: add-dark-mode has 2 commits that aren't in
+                  origin/main (377abecaabf9) or on any other branch of origin this Mac knows, so
+                  nothing outside this Mac may hold them. This Mac last updated origin/main 2 days
+                  ago (Oct 31, 2026), and Midden doesn't contact origin. To see them: `git -C
+                  /Users/you/Code/acme-app log --oneline 377abecaabf9..8a4616d34353`
+  SAFE    64.4 MB   Claude Code worktree agent-7f3c2a (fix-login-redirect)
                   ~/Code/acme-app/.claude/worktrees/agent-7f3c2a
                   A second checkout of the “acme-app” repository that Claude Code made for a
                   parallel task: it's in a .claude/worktrees folder, where Claude Code puts the
                   worktrees it creates. Removing it deletes this folder only; the branch
-                  “fix-login-redirect” and its commits stay in the repository.
+                  “fix-login-redirect” and its commits stay in the repository, and the commits are
+                  also in origin/main.
 
 Build folders  84.0 MB in 1 item
-  SAFE    84.0 MB   node_modules in acme-app
+  REVIEW  84.0 MB   node_modules in acme-app
                   ~/Code/acme-app/node_modules
                   Packages installed for the project “acme-app”. `npm install` puts them back.
+                  ✗ Everything in it can be recreated: `npm install` reinstalls the packages its
+                  lockfile lists. Midden doesn't check the folder for edited files or packages
+                  installed some other way, which would be lost.
 
 Developer tools  125.0 MB in 1 item
   SAFE    125.0 MB  Xcode DerivedData
@@ -104,11 +120,11 @@ Developer tools  125.0 MB in 1 item
                   builds. Xcode recreates them as needed; the next build of each project starts from
                   scratch and takes longer, and Xcode indexes the project again.
 
-Safe to clean: 403.0 MB in 5 items.
+Safe to clean: 189.4 MB in 2 items. Worth a look: 149.2 MB in 2 items.
 Clean an item with `midden clean <path>`; Midden checks it again before deleting.
 ```
 
-The example above is shortened. It comes from a small demo folder.
+The example above comes from a small demo folder, shown as if it were your home, without the line about free disk space.
 
 ```sh
 midden clean ~/Code/acme-app/.claude/worktrees/agent-7f3c2a   # asks before deleting
