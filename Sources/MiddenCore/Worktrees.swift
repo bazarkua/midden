@@ -209,11 +209,9 @@ struct WorktreeAuditor: Sendable {
                     id: "ignoredFiles", title: "No ignored files", passed: true,
                     detail: "git ignores nothing in it, so git status sees every file."))
             } else {
-                let count = ignoredEntries.count
-                let sample = ignoredEntries.prefix(3).joined(separator: ", ") + (count > 3 ? ", …" : "")
                 checks.append(SafetyCheck(
                     id: "ignoredFiles", title: "No ignored files", passed: false,
-                    detail: "\(count) \(count == 1 ? "file or folder" : "files or folders") git ignores, which it doesn't count as changes and `git worktree remove` deletes without asking: \(sample). Midden can't tell whether they can be made again, so look before removing it."))
+                    detail: Self.ignoredDetail(ignoredEntries, worktree: path, lookup: lookup)))
             }
         }
 
@@ -558,6 +556,68 @@ struct WorktreeAuditor: Sendable {
         return (changed, ignored)
     }
 
+    /// The ignored-files check's detail. A dependency tree or build output
+    /// that a tool recreates, next to the project file that tool reads, gets
+    /// one sentence per kind: what puts it back and what would be lost. So
+    /// worktrees that hold only those read the same, and can be added to a
+    /// plan together. Anything else is listed by name: Midden can't tell
+    /// whether it can be made again. The check fails either way.
+    static func ignoredDetail(_ entries: [String], worktree: String, lookup: (String) -> Int32) -> String {
+        func exists(_ relative: String) -> Bool { lookup(worktree + "/" + relative) == 0 }
+        func beside(_ folder: String, _ names: [String]) -> Bool {
+            names.contains { exists(folder.isEmpty ? $0 : folder + "/" + $0) }
+        }
+        var dependencies: [String: Int] = [:]
+        var output: Set<String> = []
+        var finderSettings = false
+        var other: [String] = []
+        for entry in entries {
+            let isFolder = entry.hasSuffix("/")
+            let trimmed = isFolder ? String(entry.dropLast()) : entry
+            let name = (trimmed as NSString).lastPathComponent
+            let parent = (trimmed as NSString).deletingLastPathComponent
+            switch (name, isFolder) {
+            case ("node_modules", true) where beside(parent, ["package.json"]):
+                let tool = [("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lock", "bun"), ("bun.lockb", "bun")]
+                    .first { beside(parent, [$0.0]) || exists($0.0) }?.1 ?? "npm"
+                dependencies["node_modules: reinstalled by `\(tool) install`", default: 0] += 1
+            case ("Pods", true) where beside(parent, ["Podfile"]):
+                dependencies["Pods: reinstalled by `pod install`", default: 0] += 1
+            case (".next", true), (".nuxt", true), (".svelte-kit", true), (".turbo", true), (".parcel-cache", true),
+                (".angular", true):
+                if beside(parent, ["package.json"]) || exists("package.json") { output.insert(name) } else { other.append(entry) }
+            case ("target", true) where beside(parent, ["Cargo.toml"]):
+                output.insert(name)
+            case (let folder, true) where ["build", ".gradle"].contains(folder)
+                && beside(parent, ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]):
+                output.insert(name)
+            case (".dart_tool", true) where beside(parent, ["pubspec.yaml"]):
+                output.insert(name)
+            case (".DS_Store", false):
+                finderSettings = true
+            default:
+                other.append(entry)
+            }
+        }
+        var sentences: [String] = []
+        if !other.isEmpty {
+            let count = other.count
+            let sample = other.prefix(3).joined(separator: ", ") + (count > 3 ? ", …" : "")
+            sentences.append("\(count) \(count == 1 ? "file or folder" : "files or folders") git ignores, which it doesn't count as changes and `git worktree remove` deletes without asking: \(sample). Midden can't tell whether they can be made again, so look before removing it.")
+        }
+        for (reason, count) in dependencies.sorted(by: { $0.key < $1.key }) {
+            let (head, tail) = reason.split(separator: ":", maxSplits: 1).map(String.init).pair
+            sentences.append("\(head)\(count > 1 ? " (\(count) folders)" : ""):\(tail); edits inside \(count > 1 ? "them" : "it"), if any, would be lost.")
+        }
+        if !output.isEmpty {
+            sentences.append("Build output (\(output.sorted().joined(separator: ", "))): the next build recreates it; anything else kept inside would be lost.")
+        }
+        if finderSettings {
+            sentences.append(".DS_Store: removing it may reset custom Finder view settings.")
+        }
+        return sentences.joined(separator: " ")
+    }
+
     /// One file in the index, from `git ls-files -s -v -z`.
     struct IndexEntry: Sendable, Equatable {
         /// `H` for a normal file, a lowercase letter when assume-unchanged,
@@ -885,6 +945,11 @@ struct WorktreeAuditor: Sendable {
         path.contains(where: { " '\"$\\".contains($0) })
             ? "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'" : path
     }
+}
+
+private extension Array where Element == String {
+    /// The first two elements; empty strings for missing ones.
+    var pair: (String, String) { (first ?? "", count > 1 ? self[1] : "") }
 }
 
 /// Why Midden couldn't check something, in a sentence for the user.

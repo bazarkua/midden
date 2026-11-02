@@ -106,6 +106,43 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
         }
     }
 
+    /// Ignored dependency trees and build output beside their project files
+    /// get one sentence per kind, so worktrees holding only those read the
+    /// same and can be added to a plan together. They stay Review.
+    @Test func ignoredDependenciesAndBuildOutputGetOneReasonPerKind() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try home.write("repo/.gitignore", text: "node_modules/\n.next/\n.turbo/\n.DS_Store\n.env\n")
+        try home.write("repo/package.json", text: "{}")
+        try home.write("repo/pnpm-lock.yaml", text: "lockfileVersion: 9\n")
+        try home.write("repo/apps/web/package.json", text: "{}")
+        try sh(["git", "-C", repository, "add", "."])
+        try sh(["git", "-C", repository, "commit", "-q", "-m", "Project"])
+        var details: [String] = []
+        for branch in ["one", "two"] {
+            let worktree = try addWorktree(home, repository: repository, branch: branch)
+            try home.write("worktrees/\(branch)/node_modules/dep/index.js", text: "x")
+            try home.write("worktrees/\(branch)/apps/web/node_modules/dep/index.js", text: "x")
+            try home.write("worktrees/\(branch)/apps/web/.next/cache/a", text: "x")
+            try home.write("worktrees/\(branch)/.turbo/b", text: "x")
+            try home.write("worktrees/\(branch)/.DS_Store", text: "x")
+            let audit = try auditWorktree(home, worktree)
+            let check = try #require(audit.checks.first { $0.id == "ignoredFiles" })
+            #expect(!check.passed)
+            #expect(audit.safety == .review)
+            details.append(check.detail)
+        }
+        #expect(details[0] == details[1])
+        #expect(details[0] == "node_modules (2 folders): reinstalled by `pnpm install`; edits inside them, if any, would be lost. Build output (.next, .turbo): the next build recreates it; anything else kept inside would be lost. .DS_Store: removing it may reset custom Finder view settings.")
+        // Anything else ignored still comes first, by name.
+        try home.write("worktrees/one/.env", text: "SECRET=1")
+        let mixed = try auditWorktree(home, home.path("worktrees/one"))
+        let detail = mixed.checks.first { $0.id == "ignoredFiles" }?.detail ?? ""
+        #expect(detail.hasPrefix("1 file or folder git ignores"), "\(detail)")
+        #expect(detail.contains(".env"), "\(detail)")
+        #expect(detail.contains("node_modules (2 folders)"), "\(detail)")
+    }
+
     /// A tracked file marked assume-unchanged or skip-worktree can be
     /// edited without `git status` showing it, and `git worktree remove`
     /// then deletes the edit. Midden can't verify such files without
