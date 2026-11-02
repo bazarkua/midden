@@ -26,6 +26,8 @@ import Testing
         Case(path: "Library/pnpm/store", title: "pnpm store", safety: .info),
         // Specific ~/.cache rules win over the generic one.
         Case(path: ".cache/uv", title: "uv cache", safety: .safe),
+        // A private spec repo can hold commits that exist nowhere else.
+        Case(path: ".cocoapods/repos", title: "CocoaPods spec repos", safety: .review),
         Case(path: ".cache/huggingface", title: "Hugging Face models", safety: .info),
         Case(path: ".cache/gitstatus", title: "~/.cache/{name}", safety: .review, wildcard: "gitstatus"),
         Case(path: "Library/Caches/pip", title: "pip cache", safety: .safe),

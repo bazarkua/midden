@@ -486,13 +486,20 @@ enum RuleCatalog {
                 downloads them again on the next build.
                 """,
             action: .removeDirectory),
+        // Review: a private spec repo is a git clone, and `pod repo push
+        // --local-only` commits to it without pushing ("Does not perform the
+        // step of pushing REPO to its remote", CocoaPods' push.rb), so such a
+        // commit exists only here.
         Rule(
             paths: [".cocoapods/repos"],
-            category: .packageCaches, safety: .safe,
+            category: .packageCaches, safety: .review,
             title: "CocoaPods spec repos", group: "CocoaPods",
             explanation: """
                 Local copies of CocoaPods spec repositories. `pod install` fetches specs again \
-                as needed, and clones a spec repo again when a Podfile names it as a source.
+                as needed, and clones a spec repo again when a Podfile names it as a source. A \
+                private spec repo can hold commits that exist only here: `pod repo push \
+                --local-only` commits a spec without pushing it. To check one, run `git -C \
+                ~/.cocoapods/repos/<name> log --oneline HEAD --not --remotes`.
                 """,
             action: .removeContents),
         Rule(
