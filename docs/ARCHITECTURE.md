@@ -119,7 +119,7 @@ Large files, Downloads and iPhone backups are always Info. Midden has no way to 
 
 ### Worktrees: proof before a verdict
 
-A linked worktree is a directory whose `.git` is a file pointing into `<repo>/.git/worktrees/`. Midden runs thirteen checks and shows each one to the user:
+A linked worktree is a directory whose `.git` is a file pointing into `<repo>/.git/worktrees/`. Midden runs these checks and shows each one to the user, with a fourteenth, no other repository inside, described below the table:
 
 | Check | How | Why it matters |
 |---|---|---|
