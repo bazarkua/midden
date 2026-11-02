@@ -522,16 +522,22 @@ enum RuleCatalog {
                 projects exist.
                 """,
             action: .manual("Run `pnpm store prune` to remove packages no project uses.")),
+        // uv's docs (docs.astral.sh/uv/concepts/cache): "it's never safe to
+        // modify the cache directly (e.g., by removing a file or directory)".
+        // `uv cache clean` keeps the folder and its lock file so running uv
+        // processes can share it, and waits for them first.
         Rule(
             paths: [".cache/uv"],
-            category: .packageCaches, safety: .safe,
+            category: .packageCaches, safety: .info,
             title: "uv cache", group: "uv",
             explanation: """
                 Python packages uv downloaded and built. uv downloads them again as needed. \
-                Your virtual environments keep working, but deleting the cache can free less \
-                than shown, because uv links these files into them.
+                Your virtual environments keep working, but cleaning the cache can free less \
+                than shown, because uv links these files into them. uv says deleting files in \
+                its cache by hand is never safe, because other uv processes may be using it, so \
+                Midden leaves it to uv's own command.
                 """,
-            action: .removeDirectory),
+            action: .manual("Run `uv cache clean`. It waits up to 5 minutes for running uv processes, then empties the cache.")),
         Rule(
             paths: [".cache/pip", "Library/Caches/pip"],
             category: .packageCaches, safety: .safe,

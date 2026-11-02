@@ -25,7 +25,8 @@ import Testing
         Case(path: ".gradle/wrapper/dists", title: "Gradle distributions", safety: .review),
         Case(path: "Library/pnpm/store", title: "pnpm store", safety: .info),
         // Specific ~/.cache rules win over the generic one.
-        Case(path: ".cache/uv", title: "uv cache", safety: .safe),
+        // uv's own command cleans its cache; deleting by hand never is safe.
+        Case(path: ".cache/uv", title: "uv cache", safety: .info),
         // A private spec repo can hold commits that exist nowhere else.
         Case(path: ".cocoapods/repos", title: "CocoaPods spec repos", safety: .review),
         Case(path: ".cache/huggingface", title: "Hugging Face models", safety: .info),
