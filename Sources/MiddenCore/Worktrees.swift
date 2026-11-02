@@ -855,8 +855,10 @@ struct WorktreeAuditor: Sendable {
         guard let url = config.originURL else {
             return fail("This repository has no remote named origin, so Midden can't tell whether its commits exist anywhere else.")
         }
-        guard !WorktreeGitConfig.isLocal(config.rewritten(url)) else {
-            return fail("origin is a folder on this Mac, so being in it doesn't mean the work is stored anywhere else.")
+        // A push to a folder on this Mac moves origin/main too, so where git
+        // pushes counts as much as where it fetches from.
+        guard !config.originAddresses(url).contains(where: WorktreeGitConfig.isLocal) else {
+            return fail("origin, or where git pushes to it, is a folder on this Mac, so being in it doesn't mean the work is stored anywhere else.")
         }
         let symref = run(["for-each-ref", "--format=%(symref)%00%(objectname)", "refs/remotes/origin/HEAD"])
         let fields = symref.output.trimmingCharacters(in: .newlines).split(separator: "\0").map(String.init)
@@ -981,12 +983,19 @@ struct WorktreeGitConfig: Sendable, Equatable {
     /// origin's first URL, the one git fetches from. Never shown: it can
     /// carry a token.
     var originURL: String?
+    /// Every `remote.origin.url`: git pushes to all of them when origin
+    /// has no push URL.
+    var originURLs: [String] = []
+    /// `remote.origin.pushurl`: where git pushes instead, when set.
+    var originPushURLs: [String] = []
     /// A promisor remote or `extensions.partialClone`: objects can be
     /// missing, and git would download them.
     var partialClone = false
     var refStorage: String?
     /// `url.<base>.insteadOf`: URLs starting with `prefix` use `base`.
     var rewrites: [Rewrite] = []
+    /// `url.<base>.pushInsteadOf`: the same, for pushing only.
+    var pushRewrites: [Rewrite] = []
 
     struct Rewrite: Sendable, Equatable {
         var prefix: String
@@ -994,7 +1003,7 @@ struct WorktreeGitConfig: Sendable, Equatable {
     }
 
     static let pattern =
-        #"^(remote\.origin\.url|remote\..*\.promisor|extensions\.(partialclone|refstorage)|filter\..*\.(clean|smudge|process)|url\..*\.insteadof)$"#
+        #"^(remote\.origin\.(url|pushurl)|remote\..*\.promisor|extensions\.(partialclone|refstorage)|filter\..*\.(clean|smudge|process)|url\..*\.(push)?insteadof)$"#
 
     /// Records end in NUL; a key is followed by a newline and its value, or
     /// by nothing for a key without one. Section and variable names come
@@ -1008,6 +1017,9 @@ struct WorktreeGitConfig: Sendable, Equatable {
             let lower = key.lowercased()
             if lower == "remote.origin.url" {
                 if config.originURL == nil { config.originURL = value }
+                if let value { config.originURLs.append(value) }
+            } else if lower == "remote.origin.pushurl" {
+                if let value { config.originPushURLs.append(value) }
             } else if lower.hasPrefix("remote."), lower.hasSuffix(".promisor") {
                 if value.map({ ["true", "yes", "on", "1"].contains($0.lowercased()) }) ?? true {
                     config.partialClone = true
@@ -1021,7 +1033,12 @@ struct WorktreeGitConfig: Sendable, Equatable {
                 if !name.isEmpty { config.filters.insert(String(name)) }
             } else if lower.hasPrefix("url."), let dot = key.lastIndex(of: "."), let value {
                 let base = key[key.index(key.startIndex, offsetBy: "url.".count)..<dot]
-                config.rewrites.append(Rewrite(prefix: value, base: String(base)))
+                let rewrite = Rewrite(prefix: value, base: String(base))
+                if lower.hasSuffix(".pushinsteadof") {
+                    config.pushRewrites.append(rewrite)
+                } else {
+                    config.rewrites.append(rewrite)
+                }
             }
         }
         return config
@@ -1029,10 +1046,32 @@ struct WorktreeGitConfig: Sendable, Equatable {
 
     /// `url` after git's insteadOf rewriting: the longest matching prefix wins.
     func rewritten(_ url: String) -> String {
+        Self.rewritten(url, by: rewrites)
+    }
+
+    private static func rewritten(_ url: String, by rewrites: [Rewrite]) -> String {
         guard let rewrite = rewrites.filter({ !$0.prefix.isEmpty && url.hasPrefix($0.prefix) })
             .max(by: { $0.prefix.count < $1.prefix.count })
         else { return url }
         return rewrite.base + url.dropFirst(rewrite.prefix.count)
+    }
+
+    /// Every address git may fetch origin from or push it to: `fetchURL`
+    /// rewritten, and the push URLs, or with none, every URL rewritten for
+    /// pushing. Rewritten both ways where git's rules differ by version,
+    /// so a folder on this Mac is never missed.
+    func originAddresses(_ fetchURL: String) -> [String] {
+        var addresses = [rewritten(fetchURL)]
+        if originPushURLs.isEmpty {
+            for url in originURLs.isEmpty ? [fetchURL] : originURLs {
+                addresses += [rewritten(url), Self.rewritten(url, by: pushRewrites)]
+            }
+        } else {
+            for url in originPushURLs {
+                addresses += [url, rewritten(url)]
+            }
+        }
+        return addresses
     }
 
     /// Whether git would read `url` as a folder on this Mac: a `file://`

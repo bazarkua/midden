@@ -152,8 +152,38 @@ private func commit(_ home: TempDir, _ worktree: String, _ name: String) throws 
         let worktree = try addWorktree(home, repository: repository, branch: "feature")
 
         let result = try audit(home, worktree)
-        #expect(check(result, "integrated")?.detail.contains("origin is a folder on this Mac") == true, "\(url)")
+        #expect(check(result, "integrated")?.detail.contains("is a folder on this Mac") == true, "\(url)")
         #expect(result.safety == .review)
+    }
+
+    /// A push to a folder on this Mac moves origin/main as a fetch would,
+    /// so a push address there proves nothing either.
+    @Test(arguments: ["pushurl", "pushInsteadOf"])
+    func pushingToAFolderOnThisMacIsReview(kind: String) throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try publish(repository)
+        if kind == "pushurl" {
+            try sh(["git", "-C", repository, "config", "remote.origin.pushurl", "/Volumes/backup/repo.git"])
+        } else {
+            try sh(["git", "-C", repository, "config", "url./Volumes/backup/.pushInsteadOf", "https://example.com/"])
+        }
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+
+        let result = try audit(home, worktree)
+        let detail = check(result, "integrated")?.detail ?? ""
+        #expect(detail.contains("or where git pushes to it, is a folder on this Mac"), "\(kind): \(detail)")
+        #expect(result.safety == .review)
+    }
+
+    /// Push addresses on another machine change nothing.
+    @Test func pushAddressesOfOtherMachinesStaySafe() {
+        let config = WorktreeGitConfig.parse(
+            "remote.origin.url\nhttps://example.com/a.git\0remote.origin.pushurl\ngit@example.com:a.git\0"
+                + "url./Volumes/x/.pushinsteadof\nhttps://other.example/\0")
+        #expect(config.originPushURLs == ["git@example.com:a.git"])
+        #expect(config.pushRewrites == [WorktreeGitConfig.Rewrite(prefix: "https://other.example/", base: "/Volumes/x/")])
+        #expect(!config.originAddresses("https://example.com/a.git").contains(where: WorktreeGitConfig.isLocal))
     }
 
     /// A worktree's own configuration can name another folder as its work
