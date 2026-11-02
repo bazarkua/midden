@@ -62,10 +62,13 @@ import Testing
         #expect(installer.action == .moveToTrash)
         #expect(byPath[home.path("Downloads")]?.safety == .info)
 
+        // Idle for long enough, but a dependency tree is Review in v1: edits
+        // in it and packages installed without the lockfile would be lost.
         let old = try #require(byPath[home.path("Projects/old/node_modules")])
-        #expect(old.safety == .safe)
+        #expect(old.safety == .review)
         #expect(old.group == "old")
-        #expect(old.checks.first?.passed == true)
+        #expect(old.checks.map(\.id) == ["projectIdle", "contentsRecreatable"])
+        #expect(old.checks.map(\.passed) == [true, false])
         let fresh = try #require(byPath[home.path("Projects/fresh/node_modules")])
         #expect(fresh.safety == .review)
         #expect(fresh.checks.first?.passed == false)
@@ -84,7 +87,7 @@ import Testing
         let known: Set<String> = [
             "uncommitted", "ignoredFiles", "hiddenChanges", "onBranch", "locked", "inUse", "lastActivity",
             "gitInstalled", "gitReadable", "repositoryExists", "worktreeRecorded", "projectIdle",
-            "packagesRecorded", "simulatorUnavailable", "measured",
+            "packagesRecorded", "simulatorUnavailable", "measured", "contentsRecreatable",
         ]
         #expect(report.findings.flatMap(\.checks).allSatisfy { known.contains($0.id) })
         #expect(tree.checks.map(\.id) == [

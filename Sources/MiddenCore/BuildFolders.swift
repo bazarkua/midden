@@ -104,10 +104,41 @@ enum BuildFolderKind: Sendable, Hashable {
         }
     }
 
-    /// Whether recreating it needs more than one command. Virtual
-    /// environments need to know which packages were installed.
+    /// Whether it is Review however long the project has been idle. Only
+    /// SwiftPM's selective clean can be Safe in v1: a package
+    /// manager reinstalls what its lockfile lists, but nothing records a
+    /// hand-edited dependency file or a package installed without the
+    /// lockfile, and the name of a build tool's output folder doesn't prove
+    /// that the tool wrote everything in it. Virtual environments need to
+    /// know which packages were installed.
     var alwaysReview: Bool {
-        self == .pythonEnvironment
+        self != .swiftPMBuild
+    }
+
+    /// Why a kind that's `alwaysReview` isn't Safe, as a failed check.
+    /// Nil for Python environments, which have a check of their own.
+    func reviewCheck(_ markers: ProjectFacts.Markers) -> SafetyCheck? {
+        let detail: String
+        switch self {
+        case .pythonEnvironment, .swiftPMBuild:
+            return nil
+        case .nodeModules, .pods:
+            detail = """
+                \(rebuild(markers)) reinstalls the packages its lockfile lists. Midden doesn't \
+                check the folder for edited files or packages installed some other way, which \
+                would be lost.
+                """
+        case .javaScriptBuild, .cargoTarget, .gradleCache, .gradleBuild, .dartTool, .flutterBuild,
+            .pythonToolCache:
+            detail = """
+                \(rebuild(markers).prefix(1).uppercased() + rebuild(markers).dropFirst()) recreates \
+                what the tool writes here. Midden doesn't yet check that nothing else is kept in \
+                it, such as files added by hand or by another tool.
+                """
+        }
+        return SafetyCheck(
+            id: "contentsRecreatable", title: "Everything in it can be recreated", passed: false,
+            detail: detail)
     }
 
     /// What `swift package clean` keeps in .build: the repository cache,

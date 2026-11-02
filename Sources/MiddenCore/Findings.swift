@@ -134,6 +134,9 @@ enum Findings {
                     ? "“\(project)” has a requirements, pyproject.toml or lock file to reinstall from."
                     : "“\(project)” has no requirements.txt, pyproject.toml or lock file."))
         }
+        if let review = match.kind.reviewCheck(match.markers) {
+            checks.append(review)
+        }
         return Finding(
             id: path, category: .buildFolders, title: "\(name) in \(project)", path: path,
             group: project, bytes: bytes,
