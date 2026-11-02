@@ -287,6 +287,48 @@ private func commit(_ home: TempDir, _ worktree: String, _ name: String) throws 
         #expect(result.safety == .info)
     }
 
+    // MARK: Programs using it
+
+    /// A program working elsewhere that names a file in the worktree, such
+    /// as `tail -f <worktree>/log`, uses it too. git's file watcher doesn't.
+    @Test func aProgramNamingItsFilesFromElsewhereBlocksRemoval() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try publish(repository)
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        guard case .directory(.worktree(let match)?, _) = try reclassify(home, "worktrees/feature") else {
+            Issue.record("not a worktree")
+            return
+        }
+        func audit(_ processes: [ProcessUsage.Process]) -> WorktreeAudit {
+            WorktreeAuditor(
+                processes: ProcessDirectories(processes: []), usage: ProcessUsage(processes: processes),
+                activeWindow: 0
+            ).audit(match)
+        }
+        let tail = ProcessUsage.Process(
+            pid: 4242, command: "tail", directory: "/", executable: "/usr/bin/tail",
+            arguments: ["tail", "-f", worktree + "/server.log"])
+        let watcher = ProcessUsage.Process(
+            pid: 4243, command: "git", directory: worktree, executable: "/usr/bin/git",
+            arguments: ["git", "fsmonitor--daemon", "run", "--detach"])
+
+        let used = audit([tail, watcher])
+        #expect(check(used, "inUse")?.detail == "In use by tail (pid 4242).", "\(used.checks)")
+        #expect(used.safety == .info)
+
+        let idle = audit([watcher])
+        #expect(check(idle, "inUse")?.passed == true)
+        #expect(check(idle, "inUse")?.detail.contains("None runs from it or names it in its arguments.") == true)
+        #expect(idle.safety == .safe, "\(idle.checks)")
+
+        let unknown = WorktreeAuditor(
+            processes: ProcessDirectories(processes: []),
+            usage: ProcessUsage(processes: [], failure: "1 process couldn't be read"), activeWindow: 0
+        ).audit(match)
+        #expect(check(unknown, "inUse")?.passed == false)
+    }
+
     // MARK: Work stopped halfway
 
     @Test func aBisectInProgressBlocksRemoval() throws {

@@ -36,6 +36,10 @@ struct WorktreeAudit: Sendable {
 struct WorktreeAuditor: Sendable {
     var git: String? = Command.git()
     var processes: ProcessDirectories
+    /// Programs that run from a worktree or name it in their arguments
+    /// (`tail -f <worktree>/log`, an editor opened on a file in it) while
+    /// working elsewhere. Nil to look at working directories only.
+    var usage: ProcessUsage? = nil
     var now = Date()
     /// Worktrees used more recently than this are "review", not "safe".
     var activeWindow: TimeInterval = 7 * 86_400
@@ -397,8 +401,13 @@ struct WorktreeAuditor: Sendable {
         // git's own file watcher isn't a program using the worktree: the
         // cleaner stops it before removing. Anything else counts.
         let watchers = processes.inside(path).filter(\.isGitFileMonitor)
-        let users = processes.inside(path).filter { !$0.isGitFileMonitor }
-        if users.isEmpty, let failure = processes.failure {
+        var users = processes.inside(path).filter { !$0.isGitFileMonitor }
+        let others = (usage?.using(path) ?? []).filter { process in
+            !(process.command == "git" && process.arguments.contains("fsmonitor--daemon"))
+                && !users.contains { $0.pid == process.pid }
+        }
+        users += others.map { ProcessDirectories.Process(pid: $0.pid, command: $0.displayName, directory: $0.directory) }
+        if users.isEmpty, let failure = processes.failure ?? usage?.failure {
             // Not seeing a program here proves nothing if the listing is incomplete.
             checks.append(SafetyCheck(
                 id: "inUse", title: "Not in use", passed: false,
@@ -407,9 +416,10 @@ struct WorktreeAuditor: Sendable {
         } else if users.isEmpty {
             checks.append(SafetyCheck(
                 id: "inUse", title: "Not in use", passed: true,
-                detail: watchers.isEmpty
+                detail: (watchers.isEmpty
                     ? "No running program has its working directory in it."
-                    : "No program is working in it. git's file watcher is running here; Midden stops it before removing."))
+                    : "No program is working in it. git's file watcher is running here; Midden stops it before removing.")
+                    + (usage == nil ? "" : " None runs from it or names it in its arguments.")))
         } else {
             let names = users.prefix(3).map { "\($0.command) (pid \($0.pid))" }.joined(separator: ", ")
                 + (users.count > 3 ? " and others" : "")

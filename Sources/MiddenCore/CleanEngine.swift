@@ -41,7 +41,7 @@ struct CleanEngine {
     /// change the file system at exactly that moment.
     var barrier: @Sendable (CleanStage, String) -> Void = { _, _ in }
     /// The worktree auditor, made fresh for each item; replaceable in tests.
-    var makeAuditor: @Sendable () -> WorktreeAuditor = { WorktreeAuditor(processes: .current()) }
+    var makeAuditor: @Sendable () -> WorktreeAuditor = { WorktreeAuditor(processes: .current(), usage: .current()) }
     /// The mount table and a path's device; replaceable in tests.
     var mountPoints: @Sendable () -> [String]? = { System.mountPoints() }
     var deviceOf: @Sendable (String) -> dev_t? = { CleanEngine.lstatDevice($0) }

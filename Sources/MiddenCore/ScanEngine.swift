@@ -135,16 +135,19 @@ struct ScanEngine {
             }
         }
 
-        if !inUseChecks.isEmpty {
-            let usage = options.processUsage?() ?? ProcessUsage.current()
+        // Worktrees outside home, found through the repositories inside it.
+        // One reading of what every program runs from, works in and names,
+        // for the rules that ask and for the worktrees.
+        let external = ExternalWorktrees.discover(gitDirectories: collected.gitDirectories, home: home)
+        let usage = !inUseChecks.isEmpty || !worktrees.isEmpty || !external.worktrees.isEmpty
+            ? options.processUsage?() ?? ProcessUsage.current() : nil
+        if let usage {
             for (index, scope) in inUseChecks { findings[index] = Findings.checkingUse(findings[index], usage, by: scope) }
         }
 
-        // Worktrees outside home, found through the repositories inside it.
         // One counted pass checks every worktree: those outside home are
         // sized first with the same walker (and dropped if too small), then
         // each is audited. Several run at once, so each walker gets 2 threads.
-        let external = ExternalWorktrees.discover(gitDirectories: collected.gitDirectories, home: home)
         // Those outside home first: sizing them is the slow part, and
         // starting it early keeps the tail of the phase short.
         let candidates =
@@ -153,7 +156,7 @@ struct ScanEngine {
         if !candidates.isEmpty {
             estimator.begin(.worktrees, detail: "Checking worktrees", total: candidates.count)
             let auditor = WorktreeAuditor(
-                processes: .current(), now: now, activeWindow: options.worktreeActiveWindow)
+                processes: .current(), usage: usage, now: now, activeWindow: options.worktreeActiveWindow)
             let finished = Atomic<Int>(0)
             let checked = Background.map(candidates) { candidate -> Finding? in
                 estimator.started(candidate.match.path)
