@@ -82,7 +82,7 @@ Without Full Disk Access the scan leaves out the folders macOS guards with a per
 
 ```text
 $ midden scan
-Scanned ~ in 0.2 s: 697 items, 453.5 MB on disk.
+Scanned ~ in 0.3 s: 694 items, 453.5 MB on disk.
 
 Git worktrees  129.6 MB in 2 items
   REVIEW  65.2 MB   Claude Code worktree agent-3b91e0 (add-dark-mode)
@@ -93,10 +93,10 @@ Git worktrees  129.6 MB in 2 items
                   “add-dark-mode” and its commits stay in the repository, but Midden couldn't
                   confirm the commits are stored anywhere else.
                   ✗ Its commits are in origin: add-dark-mode has 2 commits that aren't in
-                  origin/main (377abecaabf9) or on any other branch of origin this Mac knows, so
+                  origin/main (8b93013380ea) or on any other branch of origin this Mac knows, so
                   nothing outside this Mac may hold them. This Mac last updated origin/main 2 days
                   ago (Oct 31, 2026), and Midden doesn't contact origin. To see them: `git -C
-                  /Users/you/Code/acme-app log --oneline 377abecaabf9..8a4616d34353`
+                  /Users/you/Code/acme-app log --oneline 8b93013380ea..d307fb5b76cf`
   SAFE    64.4 MB   Claude Code worktree agent-7f3c2a (fix-login-redirect)
                   ~/Code/acme-app/.claude/worktrees/agent-7f3c2a
                   A second checkout of the “acme-app” repository that Claude Code made for a
@@ -109,9 +109,8 @@ Build folders  84.0 MB in 1 item
   REVIEW  84.0 MB   node_modules in acme-app
                   ~/Code/acme-app/node_modules
                   Packages installed for the project “acme-app”. `npm install` puts them back.
-                  ✗ Everything in it can be recreated: `npm install` reinstalls the packages its
-                  lockfile lists. Midden doesn't check the folder for edited files or packages
-                  installed some other way, which would be lost.
+                  ✗ Everything in it can be recreated: Reinstalled by `npm install`; edits inside
+                  it, if any, would be lost.
 
 Developer tools  125.0 MB in 1 item
   SAFE    125.0 MB  Xcode DerivedData

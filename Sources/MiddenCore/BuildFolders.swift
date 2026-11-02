@@ -122,19 +122,14 @@ enum BuildFolderKind: Sendable, Hashable {
         switch self {
         case .pythonEnvironment, .swiftPMBuild:
             return nil
+        // One calm sentence, the same for every folder of a kind and tool,
+        // so the app can offer them together: what puts it back, and what
+        // nothing records. Midden doesn't check for either.
         case .nodeModules, .pods:
-            detail = """
-                \(rebuild(markers)) reinstalls the packages its lockfile lists. Midden doesn't \
-                check the folder for edited files or packages installed some other way, which \
-                would be lost.
-                """
+            detail = "Reinstalled by \(rebuild(markers)); edits inside it, if any, would be lost."
         case .javaScriptBuild, .cargoTarget, .gradleCache, .gradleBuild, .dartTool, .flutterBuild,
             .pythonToolCache:
-            detail = """
-                \(rebuild(markers).prefix(1).uppercased() + rebuild(markers).dropFirst()) recreates \
-                what the tool writes here. Midden doesn't yet check that nothing else is kept in \
-                it, such as files added by hand or by another tool.
-                """
+            detail = "Recreated by \(rebuild(markers)); anything else kept inside, if any, would be lost."
         }
         return SafetyCheck(
             id: "contentsRecreatable", title: "Everything in it can be recreated", passed: false,

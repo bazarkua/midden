@@ -69,6 +69,7 @@ import Testing
         #expect(old.group == "old")
         #expect(old.checks.map(\.id) == ["projectIdle", "contentsRecreatable", "nestedContent"])
         #expect(old.checks.map(\.passed) == [true, false, true])
+        #expect(old.checks[1].detail == "Reinstalled by `npm install`; edits inside it, if any, would be lost.")
         let fresh = try #require(byPath[home.path("Projects/fresh/node_modules")])
         #expect(fresh.safety == .review)
         #expect(fresh.checks.first?.passed == false)
