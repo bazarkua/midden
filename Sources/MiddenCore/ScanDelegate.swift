@@ -15,6 +15,9 @@ final class ScanDelegate: WalkDelegate {
         /// Inside a folder a contents policy empties: what it would delete
         /// is added up from these listings.
         var tally: ContentsTally? = nil
+        /// Inside a build folder or a worktree: other repositories and
+        /// environments in it are recorded here.
+        var nested: NestedContent? = nil
     }
 
     struct FileHit: Sendable {
@@ -36,6 +39,7 @@ final class ScanDelegate: WalkDelegate {
     /// The device of the scan's root, which the walk never leaves.
     private let rootDevice = Mutex<Int32?>(nil)
     private let tallies = Mutex<[String: ContentsTally]>([:])
+    private let nestedContents = Mutex<[String: NestedContent]>([:])
     private let fileHits = Mutex<[FileHit]>([])
     private let repositories = Mutex<[String]>([])
     private let skippedPaths = Mutex<[String]>([])
@@ -66,6 +70,8 @@ final class ScanDelegate: WalkDelegate {
         var skippedFolders: [String]
         /// What each partly-emptied folder's policy would delete, by path.
         var contents: [String: ContentsMeasure] = [:]
+        /// What each build folder and worktree in home holds, by path.
+        var nested: [String: NestedContent.Found] = [:]
     }
 
     /// Hands over what the walk collected and empties the delegate. A
@@ -78,7 +84,8 @@ final class ScanDelegate: WalkDelegate {
             files: fileHits.withLock { hits in defer { hits = [] }; return hits },
             gitDirectories: repositories.withLock { paths in defer { paths = [] }; return paths },
             skippedFolders: skipped,
-            contents: tallies.withLock { tallies in defer { tallies = [:] }; return tallies.mapValues(\.measure) })
+            contents: tallies.withLock { tallies in defer { tallies = [:] }; return tallies.mapValues(\.measure) },
+            nested: nestedContents.withLock { recorders in defer { recorders = [:] }; return recorders.mapValues(\.found) })
     }
 
     /// Protected subfolders of the folder at `path` to skip, by where they
@@ -129,6 +136,7 @@ final class ScanDelegate: WalkDelegate {
         if context.scope.claimed {
             let unreadable = protectedFolders(of: dir.path, dir.entries)
             context.tally?.add(path: dir.path, entries: dir.entries, isComplete: dir.isComplete, skipped: unreadable)
+            context.nested?.add(path: dir.path, entries: dir.entries, isComplete: dir.isComplete, skipped: unreadable)
             return Visit(mark: nil, childContext: context, unreadable: unreadable)
         }
         // Part of the listing is missing: what's absent (a `.git` file, a
@@ -157,6 +165,25 @@ final class ScanDelegate: WalkDelegate {
             scope: inner,
             parent: inner.claimed ? .none : ProjectFacts(entries: dir.entries, of: match, at: dir.path))
         let unreadable = protectedFolders(of: dir.path, dir.entries)
+        // A build folder or worktree is deleted whole, so whatever it holds
+        // is recorded from the listings this walk makes of it.
+        let nested: NestedContent?
+        switch match {
+        case .buildFolder(let build)?:
+            nested = NestedContent(
+                root: dir.path, isWorktree: false,
+                kept: build.kind == .swiftPMBuild ? BuildFolderKind.swiftPMKept : [],
+                device: rootDevice.withLock { $0 })
+        case .worktree?:
+            nested = NestedContent(root: dir.path, isWorktree: true, device: rootDevice.withLock { $0 })
+        default:
+            nested = nil
+        }
+        if let nested {
+            nested.add(path: dir.path, entries: dir.entries, isComplete: dir.isComplete, skipped: unreadable)
+            nestedContents.withLock { $0[dir.path] = nested }
+            childContext.nested = nested
+        }
         // A folder a contents policy empties is measured from the listings
         // this walk makes of it, under the walk's watchdog and cancellation.
         if let policy = match?.contentsPolicy, let device = rootDevice.withLock({ $0 }) {

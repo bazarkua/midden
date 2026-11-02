@@ -67,8 +67,8 @@ import Testing
         let old = try #require(byPath[home.path("Projects/old/node_modules")])
         #expect(old.safety == .review)
         #expect(old.group == "old")
-        #expect(old.checks.map(\.id) == ["projectIdle", "contentsRecreatable"])
-        #expect(old.checks.map(\.passed) == [true, false])
+        #expect(old.checks.map(\.id) == ["projectIdle", "contentsRecreatable", "nestedContent"])
+        #expect(old.checks.map(\.passed) == [true, false, true])
         let fresh = try #require(byPath[home.path("Projects/fresh/node_modules")])
         #expect(fresh.safety == .review)
         #expect(fresh.checks.first?.passed == false)
@@ -88,12 +88,13 @@ import Testing
             "uncommitted", "ignoredFiles", "hiddenChanges", "submodules", "operation", "onBranch",
             "privateHistory", "integrated", "historyComplete", "filters", "locked", "inUse", "lastActivity",
             "gitInstalled", "gitReadable", "repositoryExists", "worktreeRecorded", "projectIdle",
-            "packagesRecorded", "simulatorUnavailable", "measured", "contentsRecreatable",
+            "packagesRecorded", "simulatorUnavailable", "measured", "contentsRecreatable", "nestedContent",
         ]
         #expect(report.findings.flatMap(\.checks).allSatisfy { known.contains($0.id) })
         #expect(tree.checks.map(\.id) == [
             "uncommitted", "ignoredFiles", "hiddenChanges", "submodules", "operation", "onBranch",
             "privateHistory", "integrated", "historyComplete", "filters", "locked", "inUse", "lastActivity",
+            "nestedContent",
         ])
         #expect(report.disk.volumeName?.isEmpty == false)
         #expect(report.home == home.path)

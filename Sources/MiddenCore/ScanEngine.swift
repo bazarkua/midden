@@ -72,7 +72,7 @@ struct ScanEngine {
         var findings: [Finding] = []
         /// Findings whose rule asks for a "not in use" check, by index.
         var inUseChecks: [(index: Int, by: Rule.InUseBy)] = []
-        var worktrees: [(match: WorktreeMatch, bytes: Int64, breakdown: [Slice])] = []
+        var worktrees: [(match: WorktreeMatch, bytes: Int64, breakdown: [Slice], nested: NestedContent.Found?)] = []
         // `worktrees` holds the ones inside home, sized by the walk.
         let devicesFolder = Simulators.devicesFolder(home: home)
         var simulatorSizes: [String: Int64] = [:]
@@ -129,9 +129,9 @@ struct ScanEngine {
                     build, path: directory.path, bytes: total, breakdown: breakdown, now: now,
                     idleWindow: options.projectIdleWindow)
                 if let measure { finding = Findings.measured(finding, measure) }
-                findings.append(finding)
+                findings.append(finding.checkingNested(collected.nested[directory.path]))
             case .worktree(let worktree):
-                worktrees.append((worktree, total, breakdown))
+                worktrees.append((worktree, total, breakdown, collected.nested[directory.path]))
             }
         }
 
@@ -149,7 +149,7 @@ struct ScanEngine {
         // starting it early keeps the tail of the phase short.
         let candidates =
             external.worktrees.map { WorktreeCandidate(match: $0, size: nil) }
-            + worktrees.map { WorktreeCandidate(match: $0.match, size: ($0.bytes, $0.breakdown)) }
+            + worktrees.map { WorktreeCandidate(match: $0.match, size: ($0.bytes, $0.breakdown), nested: $0.nested) }
         if !candidates.isEmpty {
             estimator.begin(.worktrees, detail: "Checking worktrees", total: candidates.count)
             let auditor = WorktreeAuditor(
@@ -162,18 +162,18 @@ struct ScanEngine {
                 }
                 if cancellation.isCancelled { return nil }
                 var size = candidate.size
+                var nested = candidate.nested
                 if size == nil {
-                    guard let sized = try? Walker(
-                        root: candidate.match.path, delegate: SizeOnly(), threadCount: 2
-                    ).run(cancellation: cancellation), sized.totalBytes >= minimum
+                    guard let sized = NestedContent.survey(
+                        candidate.match.path, isWorktree: true, threadCount: 2, cancellation: cancellation),
+                        sized.bytes >= minimum
                     else { return nil }
-                    size = (sized.totalBytes, Findings.breakdown(
-                        total: sized.totalBytes, children: sized.root?.children ?? []))
+                    size = (sized.bytes, Findings.breakdown(total: sized.bytes, children: sized.children))
+                    nested = sized.found
                 }
                 guard let (bytes, breakdown) = size else { return nil }
-                return Findings.worktree(
-                    candidate.match, audit: auditor.audit(candidate.match), home: home, bytes: bytes,
-                    breakdown: breakdown)
+                let audit = auditor.audit(candidate.match).checkingNested(nested, path: candidate.match.path)
+                return Findings.worktree(candidate.match, audit: audit, home: home, bytes: bytes, breakdown: breakdown)
             }
             if cancellation.isCancelled { throw MiddenError.cancelled }
             findings += checked.compactMap { $0 }
@@ -259,4 +259,5 @@ enum WalkDefaults {
 private struct WorktreeCandidate: Sendable {
     var match: WorktreeMatch
     var size: (bytes: Int64, breakdown: [Slice])?
+    var nested: NestedContent.Found? = nil
 }

@@ -52,7 +52,7 @@ import Testing
         #expect(finding.action == .removeContents)
         #expect(finding.bytes == expected)
         #expect(finding.explanation.contains("swift package clean"))
-        #expect(finding.checks.map(\.id) == ["projectIdle", "measured", "inUse"])
+        #expect(finding.checks.map(\.id) == ["projectIdle", "measured", "nestedContent", "inUse"])
 
         let result = try #require(await testCleaner(home).clean([home.path(Self.build)]).results.first)
         #expect(result.ok, "\(result)")

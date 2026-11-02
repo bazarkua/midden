@@ -203,9 +203,9 @@ struct CleanEngine {
         case .file(nil, _, _), .directory(nil, _):
             return refuse("Midden doesn't recognize it as something it can clean.")
         case .directory(let match?, let dir):
-            var bytes = (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
             switch match {
             case .rule(let rule):
+                var bytes = (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
                 // A container shows only what no finding inside it covers,
                 // as the scan did. It's refused below either way.
                 if rule.isContainer, let relative = dir.relative,
@@ -227,6 +227,11 @@ struct CleanEngine {
                 if rule.rule.checkInUse { finding = Findings.checkingUse(finding, processUsage(), by: rule.rule.inUseBy) }
                 return .success((finding, rule.rule.contents))
             case .buildFolder(let build):
+                // What it holds, from a walk of its own: never from the scan.
+                let survey = NestedContent.survey(
+                    path, isWorktree: false,
+                    kept: build.kind == .swiftPMBuild ? BuildFolderKind.swiftPMKept : [])
+                var bytes = survey?.bytes ?? 0
                 var breakdown: [Slice] = []
                 var measure: ContentsMeasure?
                 if let policy = build.kind.contents {
@@ -237,11 +242,13 @@ struct CleanEngine {
                 }
                 var finding = Findings.buildFolder(build, path: path, bytes: bytes, breakdown: breakdown)
                 if let measure { finding = Findings.measured(finding, measure) }
+                finding = finding.checkingNested(survey?.found)
                 if build.kind.checkInUse { finding = Findings.checkingUse(finding, processUsage()) }
                 return .success((finding, build.kind.contents))
             case .worktree(let worktree):
-                let audit = makeAuditor().audit(worktree)
-                return .success((Findings.worktree(worktree, audit: audit, home: home, bytes: bytes), nil))
+                let survey = NestedContent.survey(path, isWorktree: true)
+                let audit = makeAuditor().audit(worktree).checkingNested(survey?.found, path: path)
+                return .success((Findings.worktree(worktree, audit: audit, home: home, bytes: survey?.bytes ?? 0), nil))
             }
         }
     }
@@ -258,9 +265,9 @@ struct CleanEngine {
         case .failure(let unproven):
             return refuse("It's outside your home folder and isn't a worktree of a repository in it: \(unproven.reason)")
         case .success(let worktree):
-            let bytes = (try? Walker(root: path, delegate: SizeOnly()).run().totalBytes) ?? 0
-            let audit = makeAuditor().audit(worktree)
-            return .success((Findings.worktree(worktree, audit: audit, home: home, bytes: bytes), nil))
+            let survey = NestedContent.survey(path, isWorktree: true)
+            let audit = makeAuditor().audit(worktree).checkingNested(survey?.found, path: path)
+            return .success((Findings.worktree(worktree, audit: audit, home: home, bytes: survey?.bytes ?? 0), nil))
         }
     }
 
