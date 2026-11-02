@@ -821,10 +821,11 @@ struct WorktreeAuditor: Sendable {
             "for-each-ref", "--count=1", "--contains", headCommit, "--format=%(refname:short)", "refs/remotes/origin",
         ])
         let remoteBranch = pushed.succeeded ? pushed.output.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let recorded = "This Mac last updated \(baseName) \(when), and Midden doesn't contact origin."
         if !remoteBranch.isEmpty {
-            return fail("\(who) has \(commits) in \(baseName) as this Mac last recorded it (\(short), updated \(when)). \(count == 1 ? "It is" : "They are") on \(remoteBranch), so \(count == 1 ? "it was" : "they were") pushed, but Midden can't tell from history whether \(count == 1 ? "it was" : "they were") merged: squash and rebase merges leave no trace there. \(see)")
+            return fail("\(who) has \(commits) in \(baseName) (\(short)). \(count == 1 ? "It is" : "They are") on \(remoteBranch), so \(count == 1 ? "it was" : "they were") pushed, but Midden can't tell from history whether \(count == 1 ? "it was" : "they were") merged: squash and rebase merges leave no trace there. \(recorded) \(see)")
         }
-        return fail("\(who) has \(commits) in \(baseName) as this Mac last recorded it (\(short), updated \(when)), or on any other branch of origin this Mac knows, so nothing outside this Mac may hold \(count == 1 ? "it" : "them"). \(see)")
+        return fail("\(who) has \(commits) in \(baseName) (\(short)) or on any other branch of origin this Mac knows, so nothing outside this Mac may hold \(count == 1 ? "it" : "them"). \(recorded) \(see)")
     }
 
     /// Whether files here go through a filter from git configuration. Each
