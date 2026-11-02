@@ -293,6 +293,10 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": "/Users/me/other/.git/objects",
             "GIT_COMMON_DIR": "/Users/me/other/.git", "GIT_NAMESPACE": "ns",
             "GIT_CONFIG_PARAMETERS": "'status.showuntrackedfiles'='no'",
+            // `git config` would read this file, and `git status` the repository's.
+            "GIT_CONFIG": "/dev/null", "GIT_IMPLICIT_WORK_TREE": "0",
+            "GIT_GRAFT_FILE": "/Users/me/grafts", "GIT_SHALLOW_FILE": "/Users/me/shallow",
+            "GIT_REPLACE_REF_BASE": "refs/other/", "GIT_PREFIX": "sub/",
         ]
         let environment = Command.environment(inherited: inherited, overrides: [:], extra: Command.quietGit)
         for name in inherited.keys where name.hasPrefix("GIT_") {

@@ -346,10 +346,14 @@ enum Command {
     /// configuration. Exported by a git hook, an alias or a shell that
     /// started Midden, they'd make `git -C <worktree> status` check another
     /// repository and call a dirty worktree clean.
+    /// It's git's own list (`git rev-parse --local-env-vars`) and
+    /// GIT_NAMESPACE. GIT_CONFIG, for one, makes `git config` read another
+    /// file while `git status` reads the repository's.
     static let removedVariables: Set<String> = [
-        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
-        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
+        "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS", "GIT_PREFIX",
     ]
 
     /// The environment a command runs with: Midden's own without
