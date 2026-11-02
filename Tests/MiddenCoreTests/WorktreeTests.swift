@@ -13,6 +13,16 @@ func makeRepository(_ home: TempDir, _ name: String = "repo") throws -> String {
     return repository
 }
 
+/// Makes `repository` look pushed and merged without fetching anything:
+/// origin is another machine, and origin/main, which origin/HEAD names, is
+/// at `commit`, with a reflog entry from now as a fetch would leave.
+func publish(_ repository: String, at commit: String = "main") throws {
+    try sh(["git", "-C", repository, "config", "remote.origin.url", "https://example.com/repo.git"])
+    try sh(["git", "-C", repository, "update-ref", "--create-reflog", "-m", "fetch: fast-forward",
+            "refs/remotes/origin/main", commit])
+    try sh(["git", "-C", repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"])
+}
+
 /// Adds a worktree on a new branch and returns its path.
 func addWorktree(_ home: TempDir, repository: String, branch: String) throws -> String {
     let path = home.path("worktrees/\(branch)")
@@ -46,6 +56,7 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
     @Test func cleanWorktreeOnABranchIsSafe() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
+        try publish(repository)
         let worktree = try addWorktree(home, repository: repository, branch: "feature")
 
         let result = try audit(home, worktree)
@@ -63,6 +74,7 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         #expect(result.repositoryName == "repo")
         #expect(result.branch == "feature")
         #expect(try finding(home, worktree).explanation.contains("the branch “feature” and its commits stay"))
+        #expect(try finding(home, worktree).explanation.contains("the commits are also in origin/main"))
         let lastActivity = try #require(result.lastActivity)
         #expect(abs(lastActivity.timeIntervalSinceNow) < 120)
     }
@@ -111,6 +123,7 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
     @Test func detachedHeadOnABranchCommitIsFine() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
+        try publish(repository)
         let worktree = try addWorktree(home, repository: repository, branch: "feature")
         try sh(["git", "-C", worktree, "switch", "-q", "--detach"])
         let result = try audit(home, worktree)
@@ -180,6 +193,7 @@ private func check(_ audit: WorktreeAudit, _ title: String) -> SafetyCheck? {
         let repository = try makeRepository(home)
         let bare = home.path("bare.git")
         try sh(["git", "clone", "-q", "--bare", repository, bare])
+        try publish(bare)
         let worktree = home.path("worktrees/from-bare")
         try sh(["git", "-C", bare, "worktree", "add", "-q", "-b", "topic", worktree])
 

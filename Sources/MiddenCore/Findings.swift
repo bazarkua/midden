@@ -159,7 +159,7 @@ enum Findings {
         let explanation = WorktreeAuditor.explanation(
             repositoryName: audit.repository == nil ? nil : audit.repositoryName,
             branch: audit.branch, removable: audit.action.isAutomatic, creator: creator,
-            outsideHome: !match.path.hasPrefix(home + "/"))
+            outsideHome: !match.path.hasPrefix(home + "/"), integratedBase: audit.integratedBase)
         return Finding(
             id: match.path, category: .worktrees, title: title, path: match.path,
             group: audit.repositoryName, bytes: bytes, safety: audit.safety,

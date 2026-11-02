@@ -404,15 +404,21 @@ struct CleanEngine {
             }
             return nil
         case .run(let arguments):
+            var environment = arguments.first == "git" ? Command.quietGit : [:]
             if finding.category == .worktrees {
+                // `git worktree remove` runs a `git status` of its own, which
+                // would run the worktree's filter programs.
+                switch WorktreeAuditor.gitEnvironment(worktree: finding.path) {
+                case .failure(let failure): return failure.reason
+                case .success(let neutralized): environment = neutralized
+                }
                 // git's file watcher, if one runs for this worktree. It fails
                 // harmlessly when none does or git lacks the feature.
                 _ = Command.run(
                     ["git", "-C", finding.path, "fsmonitor--daemon", "stop"],
-                    environment: Command.quietGit, timeout: 30)
+                    environment: environment, timeout: 30)
             }
-            let result = Command.run(
-                arguments, environment: arguments.first == "git" ? Command.quietGit : [:], timeout: 600)
+            let result = Command.run(arguments, environment: environment, timeout: 600)
             guard result.succeeded else {
                 let output = result.message
                 return output.isEmpty ? "\(arguments[0]) exited with status \(result.status)." : output

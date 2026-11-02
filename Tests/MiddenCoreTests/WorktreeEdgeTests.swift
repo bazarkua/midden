@@ -31,8 +31,11 @@ private func check(_ audit: WorktreeAudit, _ id: String) -> SafetyCheck? {
         return (repository, worktree)
     }
 
-    /// A submodule with changes is uncommitted work, even when the user
-    /// told git to ignore submodules in status.
+    /// A checked-out submodule blocks removal, changed or not, whatever
+    /// the user told git about submodules: git refuses to remove the
+    /// worktree unless forced, and forcing it deletes the worktree's copy
+    /// of the submodule's repository. Status doesn't go into it, since the
+    /// submodule's own configuration can define filters.
     @Test func aDirtySubmoduleBlocksRemovalWhateverTheConfig() throws {
         let home = try TempDir("home")
         let (repository, worktree) = try repositoryWithSubmodule(home)
@@ -43,9 +46,10 @@ private func check(_ audit: WorktreeAudit, _ id: String) -> SafetyCheck? {
         #expect(plain.succeeded && plain.output.isEmpty, "\(plain.output)")
 
         let audit = try auditWorktree(home, worktree)
-        #expect(check(audit, "uncommitted")?.passed == false)
-        #expect(check(audit, "uncommitted")?.detail.contains("lib") == true)
+        #expect(check(audit, "submodules")?.passed == false)
+        #expect(check(audit, "submodules")?.detail.contains("lib is a submodule checked out here") == true)
         #expect(audit.safety == .info)
+        #expect(!audit.action.isAutomatic)
         // The submodule inside isn't a worktree of its own.
         guard case .inside(let ancestor, _) = try reclassify(home, "worktrees/feature/lib") else {
             Issue.record("the submodule was classified on its own")

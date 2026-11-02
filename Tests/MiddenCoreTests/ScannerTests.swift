@@ -85,13 +85,15 @@ import Testing
 
         #expect(report.findings.map(\.bytes) == report.findings.map(\.bytes).sorted(by: >))
         let known: Set<String> = [
-            "uncommitted", "ignoredFiles", "hiddenChanges", "onBranch", "locked", "inUse", "lastActivity",
+            "uncommitted", "ignoredFiles", "hiddenChanges", "submodules", "operation", "onBranch",
+            "privateHistory", "integrated", "historyComplete", "filters", "locked", "inUse", "lastActivity",
             "gitInstalled", "gitReadable", "repositoryExists", "worktreeRecorded", "projectIdle",
             "packagesRecorded", "simulatorUnavailable", "measured", "contentsRecreatable",
         ]
         #expect(report.findings.flatMap(\.checks).allSatisfy { known.contains($0.id) })
         #expect(tree.checks.map(\.id) == [
-            "uncommitted", "ignoredFiles", "hiddenChanges", "onBranch", "locked", "inUse", "lastActivity",
+            "uncommitted", "ignoredFiles", "hiddenChanges", "submodules", "operation", "onBranch",
+            "privateHistory", "integrated", "historyComplete", "filters", "locked", "inUse", "lastActivity",
         ])
         #expect(report.disk.volumeName?.isEmpty == false)
         #expect(report.home == home.path)

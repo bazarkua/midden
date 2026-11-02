@@ -24,6 +24,7 @@ private func isRunning(_ pid: Int32) -> Bool {
     @Test func gitFileWatcherIsNotAProgramUsingTheWorktree() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
+        try publish(repository)
         let worktree = try addWorktree(home, repository: repository, branch: "feature")
         guard case .directory(.worktree(let match)?, _) = try reclassify(home, "worktrees/feature") else {
             Issue.record("not a worktree")

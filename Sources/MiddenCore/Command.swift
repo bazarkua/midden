@@ -55,9 +55,14 @@ enum Command {
         for name in filters.sorted() {
             settings += ["clean", "smudge", "process"].map { ("filter.\(name).\($0)", "") }
         }
+        // Pathspec magic stays on: the filter check looks files up with
+        // `:(attr:filter=<name>)`, which an inherited
+        // GIT_LITERAL_PATHSPECS=1 would turn into a search for a file of
+        // that name, finding none.
         var environment = [
             "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
-            "GIT_ALLOW_PROTOCOL": "", "GIT_CONFIG_COUNT": String(settings.count),
+            "GIT_ALLOW_PROTOCOL": "", "GIT_LITERAL_PATHSPECS": "0", "GIT_ICASE_PATHSPECS": "0",
+            "GIT_CONFIG_COUNT": String(settings.count),
         ]
         for (index, (key, value)) in settings.enumerated() {
             environment["GIT_CONFIG_KEY_\(index)"] = key

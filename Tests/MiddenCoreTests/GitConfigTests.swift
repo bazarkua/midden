@@ -74,6 +74,7 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
             "repo/.gitignore",
             text: "node_modules/\nbuild/\n.swiftpm/\n.venv/\n.build/\n*.log\n.env\n*.sqlite\n")
         try sh(["git", "-C", repository, "commit", "-q", "-am", "Ignore more"])
+        try publish(repository)
         let worktree = try addWorktree(home, repository: repository, branch: "feature")
 
         let clean = try auditWorktree(home, worktree)
@@ -152,6 +153,7 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
         let flagged = try sh(["git", "-C", worktree, "ls-files", "-v", "left-out/b.txt"])
         #expect(flagged.hasPrefix("S "), "\(flagged)")
         #expect(!FileManager.default.fileExists(atPath: home.path("worktrees/feature/left-out/b.txt")))
+        try publish(repository)
 
         let audit = try auditWorktree(home, worktree)
         #expect(audit.checks.first { $0.id == "hiddenChanges" }?.passed == true, "\(audit.checks)")
