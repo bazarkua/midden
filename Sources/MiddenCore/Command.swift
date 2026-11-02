@@ -32,12 +32,39 @@ enum Command {
     /// worktree is clean with its own `git status`, which would otherwise
     /// follow a user's status.showUntrackedFiles=no and remove a worktree
     /// holding untracked files. These settings outrank every config file.
-    static let quietGit = [
-        "GIT_OPTIONAL_LOCKS": "0",
-        "GIT_CONFIG_COUNT": "2",
-        "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
-        "GIT_CONFIG_KEY_1": "status.showUntrackedFiles", "GIT_CONFIG_VALUE_1": "all",
-    ]
+    ///
+    /// Git never contacts another machine for Midden: no protocol is
+    /// allowed (GIT_ALLOW_PROTOCOL overrides any protocol.<name>.allow a
+    /// repository sets), and a partial clone doesn't download missing
+    /// objects. History is read as stored, without replacement objects.
+    /// And nothing collects garbage, which could prune the commits Midden
+    /// is checking for.
+    static let quietGit = gitEnvironment(neutralizing: [])
+
+    /// `quietGit` with the named filters' programs replaced by nothing.
+    /// A filter is a program from git configuration, which any program
+    /// that can write to a repository can set, and `git status` runs the
+    /// clean filter of a tracked file whose timestamp changed. With an
+    /// empty command git skips the filter, or fails when the filter is
+    /// marked required, which stops the check.
+    static func gitEnvironment(neutralizing filters: some Collection<String>) -> [String: String] {
+        var settings = [
+            ("core.fsmonitor", "false"), ("status.showUntrackedFiles", "all"), ("protocol.allow", "never"),
+            ("gc.auto", "0"), ("maintenance.auto", "false"),
+        ]
+        for name in filters.sorted() {
+            settings += ["clean", "smudge", "process"].map { ("filter.\(name).\($0)", "") }
+        }
+        var environment = [
+            "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
+            "GIT_ALLOW_PROTOCOL": "", "GIT_CONFIG_COUNT": String(settings.count),
+        ]
+        for (index, (key, value)) in settings.enumerated() {
+            environment["GIT_CONFIG_KEY_\(index)"] = key
+            environment["GIT_CONFIG_VALUE_\(index)"] = value
+        }
+        return environment
+    }
 
     /// Applied to the environment of every command: a value sets a
     /// variable, nil removes it. Empty in the app; tests use it to keep the

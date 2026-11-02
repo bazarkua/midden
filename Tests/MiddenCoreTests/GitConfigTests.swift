@@ -231,6 +231,20 @@ private func uncommitted(_ audit: WorktreeAudit) -> SafetyCheck? {
     /// Midden would inherit variables that make `git -C <worktree> status`
     /// look at another repository or index, or add configuration that
     /// hides changes. None of them may reach the commands it runs.
+    /// No git command Midden runs can reach another machine, even when the
+    /// repository's own config allows the protocol.
+    @Test func gitNeverContactsAnotherMachine() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        let clone = home.path("clone")
+        try sh(["git", "clone", "-q", repository, clone])
+        try sh(["git", "-C", clone, "config", "protocol.file.allow", "always"])
+
+        let fetch = Command.run(["git", "-C", clone, "fetch", "-q", "origin"], environment: Command.quietGit)
+        #expect(!fetch.succeeded)
+        #expect(fetch.message.contains("not allowed"), "\(fetch.message)")
+    }
+
     @Test func inheritedRepositoryVariablesDontReachGit() {
         let inherited = [
             "HOME": "/Users/me", "LANG": "en_US.UTF-8",
