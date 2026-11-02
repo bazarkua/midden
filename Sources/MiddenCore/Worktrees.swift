@@ -555,17 +555,19 @@ struct WorktreeAuditor: Sendable {
     static func parseStatus(porcelainZ output: String) -> (changed: [String], ignored: [String]) {
         var changed: [String] = []
         var ignored: [String] = []
-        var fields = output.split(separator: "\0", omittingEmptySubsequences: true).makeIterator()
+        // Bytes, not Characters: a name starting with a combining mark would
+        // merge with the space or NUL before it into one Character.
+        var fields = output.utf8.split(separator: 0, omittingEmptySubsequences: true).makeIterator()
         while let field = fields.next() {
             guard field.count > 3 else { continue }
-            let state = field.prefix(2)
-            let path = String(field.dropFirst(3))
-            if state == "!!" {
+            let state = Array(field.prefix(2))
+            let path = String(decoding: field.dropFirst(3), as: UTF8.self)
+            if state == Array("!!".utf8) {
                 ignored.append(path)
             } else {
                 changed.append(path)
             }
-            if state.contains("R") || state.contains("C") { _ = fields.next() }
+            if state.contains(UInt8(ascii: "R")) || state.contains(UInt8(ascii: "C")) { _ = fields.next() }
         }
         return (changed, ignored)
     }
@@ -643,11 +645,14 @@ struct WorktreeAuditor: Sendable {
 
     /// Each entry is `<tag> <mode> <object> <stage>\t<path>`, ending in NUL.
     static func parseIndex(lsFilesSVZ output: String) -> [IndexEntry] {
-        output.split(separator: "\0", omittingEmptySubsequences: true).compactMap { field in
-            guard let tab = field.firstIndex(of: "\t"), let tag = field.first else { return nil }
-            let header = field[..<tab].split(separator: " ")
+        // Bytes, as in parseStatus.
+        output.utf8.split(separator: 0, omittingEmptySubsequences: true).compactMap { field in
+            guard let tab = field.firstIndex(of: UInt8(ascii: "\t")), let tag = field.first, tag < 0x80 else { return nil }
+            let header = field[..<tab].split(separator: UInt8(ascii: " "))
             guard header.count == 4 else { return nil }
-            return IndexEntry(tag: tag, mode: String(header[1]), path: String(field[field.index(after: tab)...]))
+            return IndexEntry(
+                tag: Character(Unicode.Scalar(tag)), mode: String(decoding: header[1], as: UTF8.self),
+                path: String(decoding: field[field.index(after: tab)...], as: UTF8.self))
         }
     }
 

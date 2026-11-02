@@ -206,6 +206,18 @@ private func commit(_ home: TempDir, _ worktree: String, _ name: String) throws 
         #expect(result.safety == .info)
     }
 
+    /// A name that starts with a combining mark stays its own entry, though
+    /// as Characters it would merge with the space or NUL before it.
+    @Test func namesStartingWithACombiningMarkAreRead() {
+        let parsed = WorktreeAuditor.parseStatus(porcelainZ: "!! \u{301}notes\0?? \u{301}x\0")
+        #expect(parsed.ignored == ["\u{301}notes"])
+        #expect(parsed.changed == ["\u{301}x"])
+        let object = String(repeating: "a", count: 40)
+        let index = WorktreeAuditor.parseIndex(lsFilesSVZ: "H 100644 \(object) 0\t\u{301}f\0S 100644 \(object) 0\tg\0")
+        #expect(index.map(\.path) == ["\u{301}f", "g"])
+        #expect(index.map(\.tag) == ["H", "S"])
+    }
+
     @Test func unknownMainBranchIsReview() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
