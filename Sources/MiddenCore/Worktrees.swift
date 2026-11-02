@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// A linked git worktree found during a scan.
 struct WorktreeMatch: Sendable, Hashable {
@@ -45,10 +46,14 @@ struct WorktreeAuditor: Sendable {
     var activeWindow: TimeInterval = 7 * 86_400
     /// How recently this Mac must have updated origin's main branch for
     /// "its commits are in origin/main" to count. Product policy, not a
-    /// guarantee: a ref's reflog records only changes, so an unchanged
-    /// branch fetched yesterday looks older than that, which errs toward
-    /// Review.
+    /// guarantee. A ref's reflog records only changes, so a fetch that
+    /// found the branch unchanged is read from FETCH_HEAD and a reflog line
+    /// written beside it (`fetchTimes`); without those, an unchanged branch
+    /// fetched yesterday looks older than it is, which errs toward Review.
     var baseFreshness: TimeInterval = 30 * 86_400
+    /// What FETCH_HEAD files and origin's reflogs show, kept per repository
+    /// and base and shared by the worktrees this auditor checks.
+    let fetchRecords = FetchRecords()
     /// When the worktree was last used; replaceable in tests.
     var activityDate: @Sendable (_ gitDir: String) -> Date? = { WorktreeAuditor.lastActivity(gitDir: $0) }
     /// Whether a file is on disk: 0, or lstat's errno; replaceable in tests.
@@ -548,6 +553,113 @@ struct WorktreeAuditor: Sendable {
         return fields.first.flatMap { Double($0) }
     }
 
+    /// Times a fetch from origin likely found origin's `branch` at `commit`.
+    /// Git adds a reflog line only when a branch moves, so a base branch
+    /// that hasn't moved in months has none, though every fetch since found
+    /// it unchanged. Such a fetch is inferred from two records that must
+    /// agree, a heuristic rather than proof of which fetch wrote what:
+    /// - a FETCH_HEAD, the repository's own or a worktree's, whose lines are
+    ///   all from origin, each naming its branch once, one of them
+    ///   `<commit>\t<marker>\tbranch '<branch>' of <url>`, with `url` as git
+    ///   writes it there;
+    /// - a line a fetch wrote in the reflog of a branch of origin, within two
+    ///   minutes of that FETCH_HEAD's modification time.
+    /// The file's time alone isn't evidence: `git fetch --append`, or
+    /// anything that touches the file, changes it without fetching `branch`.
+    /// A fetch of other branches only (`git fetch origin dev`) writes no
+    /// line for `branch`. A file touched while another worktree fetched
+    /// still passes; ARCHITECTURE.md's known limits list such cases.
+    static func fetchTimes(of branch: String, at commit: String, url: String, commonDir: String) -> [Double] {
+        let written = fetchHeadURL(url)
+        let note = "branch '\(branch)' of \(written)"
+        let linked = (try? FileManager.default.contentsOfDirectory(atPath: commonDir + "/worktrees")) ?? []
+        let files = [commonDir + "/FETCH_HEAD"] + linked.sorted().prefix(4_096).map { commonDir + "/worktrees/" + $0 + "/FETCH_HEAD" }
+        let confirmed = files.compactMap { path -> Double? in
+            guard let fd = Classifier.openRegularFile(path) else { return nil }
+            defer { close(fd) }
+            var info = stat()
+            guard fstat(fd, &info) == 0, info.st_size > 0, info.st_size <= 16 << 20 else { return nil }
+            let length = Int(info.st_size)
+            var buffer = [UInt8](repeating: 0, count: length)
+            guard pread(fd, &buffer, length, 0) == length else { return nil }
+            var notes = Set<Substring>()
+            var found = false
+            for line in String(decoding: buffer, as: UTF8.self).split(separator: "\n") {
+                let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+                // A line from another remote, or a branch named twice (lines
+                // appended to an earlier fetch's), and the file proves nothing.
+                guard fields.count == 3, fields[2].hasSuffix(" of " + written), notes.insert(fields[2]).inserted else {
+                    return nil
+                }
+                if fields[0] == commit, fields[2] == note { found = true }
+            }
+            return found ? Double(info.st_mtimespec.tv_sec) : nil
+        }
+        guard !confirmed.isEmpty else { return [] }
+        let fetches = reflogFetchTimes(commonDir + "/logs/refs/remotes/origin").sorted()
+        return confirmed.filter { time in
+            // The first fetch line at or after two minutes before `time`.
+            var low = 0
+            var high = fetches.count
+            while low < high {
+                let middle = (low + high) / 2
+                if fetches[middle] < time - 120 { low = middle + 1 } else { high = middle }
+            }
+            return low < fetches.count && fetches[low] <= time + 120
+        }
+    }
+
+    /// The times of the reflog lines fetches wrote in the files under
+    /// `folder`: lines whose message starts with `fetch` or `pull`. Only the
+    /// last 8 KB of each of at most 4,096 files is read.
+    static func reflogFetchTimes(_ folder: String) -> [Double] {
+        guard let enumerator = FileManager.default.enumerator(atPath: folder) else { return [] }
+        var times: [Double] = []
+        var files = 0
+        while files < 4_096, let relative = enumerator.nextObject() as? String {
+            guard let fd = Classifier.openRegularFile(folder + "/" + relative) else { continue }
+            defer { close(fd) }
+            files += 1
+            var info = stat()
+            guard fstat(fd, &info) == 0, info.st_size > 0 else { continue }
+            let length = Int(min(info.st_size, 8_192))
+            var buffer = [UInt8](repeating: 0, count: length)
+            guard pread(fd, &buffer, length, off_t(info.st_size) - off_t(length)) == length else { continue }
+            for line in String(decoding: buffer, as: UTF8.self).split(separator: "\n") {
+                let parts = line.split(separator: "\t", maxSplits: 1)
+                guard parts.count == 2, parts[1].hasPrefix("fetch") || parts[1].hasPrefix("pull"),
+                    let emailEnd = parts[0].lastIndex(of: ">"),
+                    let time = parts[0][parts[0].index(after: emailEnd)...].split(separator: " ").first.flatMap({ Double($0) })
+                else { continue }
+                times.append(time)
+            }
+        }
+        return times
+    }
+
+    /// A URL as git writes it into FETCH_HEAD: without a user name or
+    /// password (git's transport_anonymize_url, which leaves a local path
+    /// as it is), then without trailing slashes and a trailing `.git`.
+    /// `git@host:org/repo.git` is `host:org/repo`.
+    static func fetchHeadURL(_ url: String) -> String {
+        var text = url
+        if !WorktreeGitConfig.isLocal(url), let at = text.firstIndex(of: "@") {
+            let rest = text[text.index(after: at)...]
+            if let scheme = text.range(of: "://") {
+                let schemeIsName = text[..<scheme.lowerBound].allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "+.-".contains($0)) }
+                let slash = text[scheme.upperBound...].firstIndex(of: "/")
+                if schemeIsName, slash.map({ $0 > at }) ?? true {
+                    text = String(text[..<scheme.upperBound]) + rest
+                }
+            } else if rest.contains(":") {
+                text = String(rest)
+            }
+        }
+        while text.hasSuffix("/") { text.removeLast() }
+        if text.count > 5, text.hasSuffix(".git") { text.removeLast(4) }
+        return text
+    }
+
     /// The paths in `git status --porcelain=v1 -z` output: changed or
     /// untracked, and ignored (`!!`). Each entry is `XY <path>` ending in
     /// NUL; a rename or copy is followed by one more NUL-terminated field,
@@ -875,8 +987,26 @@ struct WorktreeAuditor: Sendable {
         let baseName = String(baseRef.dropFirst("refs/remotes/".count))
         let baseCommit = fields[1]
         let short = String(baseCommit.prefix(12))
-        guard let updated = Self.lastReflogTime(commonDir + "/logs/" + baseRef).map({ Date(timeIntervalSince1970: $0) }),
-            updated.timeIntervalSince(now) < 86_400
+        // When this Mac last learned where origin's branch is: its reflog's
+        // last line, written only when the branch moved, or a later fetch
+        // that found it where it was. A time more than a day ahead counts as
+        // no record.
+        let fetchURL = config.rewritten(url)
+        let reflogTime = Self.lastReflogTime(commonDir + "/logs/" + baseRef)
+        var records = reflogTime.map { [$0] } ?? []
+        // FETCH_HEAD is read only when the reflog leaves the base too old or
+        // without a date.
+        let reflogCounts = reflogTime.map {
+            now.timeIntervalSince1970 - $0 <= baseFreshness && $0 - now.timeIntervalSince1970 < 86_400
+        } ?? false
+        if !reflogCounts, let source = config.sourceBranch(of: baseRef), !config.otherRemoteShares(fetchURL) {
+            let key = FetchRecords.Key(commonDir: commonDir, branch: source, commit: baseCommit, url: fetchURL)
+            records += fetchRecords.times(for: key) {
+                Self.fetchTimes(of: source, at: baseCommit, url: fetchURL, commonDir: commonDir)
+            }
+        }
+        guard let updated = records.map({ Date(timeIntervalSince1970: $0) })
+            .filter({ $0.timeIntervalSince(now) < 86_400 }).max()
         else {
             return fail("Midden can't tell when \(baseName) was last updated on this Mac, because git kept no usable record of it. Fetch, then scan again: `git -C \(repo) fetch origin`")
         }
@@ -993,6 +1123,10 @@ struct WorktreeGitConfig: Sendable, Equatable {
     var originURLs: [String] = []
     /// `remote.origin.pushurl`: where git pushes instead, when set.
     var originPushURLs: [String] = []
+    /// `remote.origin.fetch`: the refspecs `git fetch origin` uses.
+    var originFetch: [String] = []
+    /// The URLs of the other remotes.
+    var otherRemoteURLs: [String] = []
     /// A promisor remote or `extensions.partialClone`: objects can be
     /// missing, and git would download them.
     var partialClone = false
@@ -1008,11 +1142,12 @@ struct WorktreeGitConfig: Sendable, Equatable {
     }
 
     static let pattern =
-        #"^(remote\.origin\.(url|pushurl)|remote\..*\.promisor|extensions\.(partialclone|refstorage)|filter\..*\.(clean|smudge|process)|url\..*\.(push)?insteadof)$"#
+        #"^(remote\.origin\.(url|pushurl|fetch)|remote\..*\.(url|promisor)|extensions\.(partialclone|refstorage)|filter\..*\.(clean|smudge|process)|url\..*\.(push)?insteadof)$"#
 
     /// Records end in NUL; a key is followed by a newline and its value, or
     /// by nothing for a key without one. Section and variable names come
-    /// lowercased; subsection names (a filter's, a URL) keep their case.
+    /// lowercased; subsection names (a remote's, a filter's, a URL) keep
+    /// their case, and `ORIGIN` is another remote than `origin`.
     static func parse(_ output: String) -> WorktreeGitConfig {
         var config = WorktreeGitConfig()
         for record in output.split(separator: "\0", omittingEmptySubsequences: true) {
@@ -1020,11 +1155,15 @@ struct WorktreeGitConfig: Sendable, Equatable {
             let key = String(parts[0])
             let value = parts.count > 1 ? String(parts[1]) : nil
             let lower = key.lowercased()
-            if lower == "remote.origin.url" {
+            if key == "remote.origin.url" {
                 if config.originURL == nil { config.originURL = value }
                 if let value { config.originURLs.append(value) }
-            } else if lower == "remote.origin.pushurl" {
+            } else if key == "remote.origin.pushurl" {
                 if let value { config.originPushURLs.append(value) }
+            } else if key == "remote.origin.fetch" {
+                if let value { config.originFetch.append(value) }
+            } else if lower.hasPrefix("remote."), lower.hasSuffix(".url") {
+                if let value { config.otherRemoteURLs.append(value) }
             } else if lower.hasPrefix("remote."), lower.hasSuffix(".promisor") {
                 if value.map({ ["true", "yes", "on", "1"].contains($0.lowercased()) }) ?? true {
                     config.partialClone = true
@@ -1059,6 +1198,44 @@ struct WorktreeGitConfig: Sendable, Equatable {
             .max(by: { $0.prefix.count < $1.prefix.count })
         else { return url }
         return rewrite.base + url.dropFirst(rewrite.prefix.count)
+    }
+
+    /// The branch of origin that `trackingRef`, such as
+    /// refs/remotes/origin/main, is fetched from, by origin's refspecs:
+    /// `main` under the usual `+refs/heads/*:refs/remotes/origin/*`. Nil when
+    /// no refspec maps onto it, more than one does, its source isn't a
+    /// branch, or a negative refspec might leave it out.
+    func sourceBranch(of trackingRef: String) -> String? {
+        var sources: Set<String> = []
+        for spec in originFetch {
+            if spec.hasPrefix("^") { return nil }
+            let parts = (spec.hasPrefix("+") ? String(spec.dropFirst()) : spec)
+                .split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 2 else { continue }
+            let (source, destination) = (parts[0], parts[1])
+            let stars = (source.filter { $0 == "*" }.count, destination.filter { $0 == "*" }.count)
+            if stars == (1, 1), let star = destination.firstIndex(of: "*") {
+                let prefix = destination[..<star]
+                let suffix = destination[destination.index(after: star)...]
+                guard trackingRef.count > prefix.count + suffix.count, trackingRef.hasPrefix(prefix),
+                    trackingRef.hasSuffix(suffix)
+                else { continue }
+                let name = trackingRef.dropFirst(prefix.count).dropLast(suffix.count)
+                sources.insert(source.replacingOccurrences(of: "*", with: name))
+            } else if stars == (0, 0), destination == trackingRef {
+                sources.insert(source)
+            }
+        }
+        guard sources.count == 1, let source = sources.first, source.hasPrefix("refs/heads/") else { return nil }
+        return String(source.dropFirst("refs/heads/".count))
+    }
+
+    /// Whether another remote's URL is written into FETCH_HEAD as `url`,
+    /// origin's, is: `alice@host:repo` and `bob@host:repo` both read
+    /// `host:repo` there, so a line can't tell them apart.
+    func otherRemoteShares(_ url: String) -> Bool {
+        let written = WorktreeAuditor.fetchHeadURL(url)
+        return otherRemoteURLs.contains { WorktreeAuditor.fetchHeadURL(rewritten($0)) == written }
     }
 
     /// Every address git may fetch origin from or push it to: `fetchURL`
@@ -1119,5 +1296,29 @@ enum Dates {
         let start = calendar.startOfDay(for: date)
         let end = calendar.startOfDay(for: now)
         return calendar.dateComponents([.day], from: start, to: end).day ?? 0
+    }
+}
+
+/// What FETCH_HEAD files and origin's reflogs show for one repository, base
+/// branch and commit. The worktrees of a repository share what's been read,
+/// so a scan doesn't read them again for each worktree. Two audits running
+/// at once may both read before either stores, and a fetch between their
+/// reads can give them different results; each is what the files held when
+/// it read them.
+final class FetchRecords: Sendable {
+    struct Key: Hashable, Sendable {
+        var commonDir: String
+        var branch: String
+        var commit: String
+        var url: String
+    }
+
+    private let cache = Mutex<[Key: [Double]]>([:])
+
+    func times(for key: Key, read: () -> [Double]) -> [Double] {
+        if let known = cache.withLock({ $0[key] }) { return known }
+        let found = read()
+        cache.withLock { $0[key] = found }
+        return found
     }
 }

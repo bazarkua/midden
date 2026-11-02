@@ -268,6 +268,164 @@ private func commit(_ home: TempDir, _ worktree: String, _ name: String) throws 
         #expect(result.safety == .review)
     }
 
+    // MARK: A fetch that found origin's main branch where it was
+
+    /// A clone whose origin, `git@fakehost:origin.git`, is another machine
+    /// to Midden. A stand-in for ssh serves it from a local repository, so
+    /// `git fetch` writes FETCH_HEAD and the reflogs as it really does. Its
+    /// origin/main reflog is emptied, as when main hasn't moved for longer
+    /// than git keeps reflog lines.
+    private struct FetchedClone {
+        let repository: String
+        let origin: String
+        let ssh: String
+
+        init(_ home: TempDir) throws {
+            origin = try makeRepository(home, "origin")
+            try sh(["git", "-C", origin, "branch", "dev"])
+            ssh = try home.write("fake-ssh", text: "#!/bin/sh\nexec git upload-pack '\(origin)'\n")
+            try sh(["chmod", "+x", ssh])
+            repository = home.path("clone")
+            try sh(["GIT_SSH_COMMAND=\(ssh)", "git", "clone", "-q", "git@fakehost:origin.git", repository])
+            try "".write(toFile: repository + "/.git/logs/refs/remotes/origin/main", atomically: false, encoding: .utf8)
+        }
+
+        /// Adds a commit to origin's dev branch, so a fetch moves origin/dev.
+        func moveDev() throws {
+            try sh(["git", "-C", origin, "switch", "-q", "dev"])
+            try sh(["git", "-C", origin, "commit", "-q", "--allow-empty", "-m", "Move dev"])
+            try sh(["git", "-C", origin, "switch", "-q", "main"])
+        }
+
+        /// Runs git with the ssh stand-in, in `folder` (the clone by default).
+        func git(_ arguments: [String], in folder: String? = nil, date: Date? = nil) throws {
+            let dated = date.map { ["GIT_COMMITTER_DATE=@\(Int($0.timeIntervalSince1970)) +0000"] } ?? []
+            try sh(["GIT_SSH_COMMAND=\(ssh)"] + dated + ["git", "-C", folder ?? repository] + arguments)
+        }
+    }
+
+    /// A fetch that finds origin/main unchanged writes no reflog line for
+    /// it. It counts as this Mac's last update of origin/main, by its
+    /// FETCH_HEAD and the line it wrote for the branch it did move.
+    @Test func aFetchThatFoundMainUnchangedCountsAsAnUpdate() throws {
+        let home = try TempDir("home")
+        let clone = try FetchedClone(home)
+        let worktree = try addWorktree(home, repository: clone.repository, branch: "feature")
+        let before = try audit(home, worktree)
+        #expect(check(before, "integrated")?.detail.contains("can't tell when origin/main was last updated") == true,
+                "\(String(describing: check(before, "integrated")))")
+        #expect(before.safety == .review)
+
+        try clone.moveDev()
+        try clone.git(["fetch", "-q", "origin"])
+        let after = try audit(home, worktree)
+        #expect(check(after, "integrated")?.passed == true, "\(String(describing: check(after, "integrated")))")
+        #expect(after.safety == .safe)
+    }
+
+    /// A fetch of another branch only writes no FETCH_HEAD line for main.
+    @Test func aFetchOfAnotherBranchSaysNothingAboutMain() throws {
+        let home = try TempDir("home")
+        let clone = try FetchedClone(home)
+        let worktree = try addWorktree(home, repository: clone.repository, branch: "feature")
+        try clone.moveDev()
+        try clone.git(["fetch", "-q", "origin", "dev"])
+        let result = try audit(home, worktree)
+        #expect(check(result, "integrated")?.detail.contains("can't tell when origin/main was last updated") == true)
+        #expect(result.safety == .review)
+    }
+
+    /// FETCH_HEAD's time counts only with a fetch's reflog line beside it:
+    /// a file touched, or appended to, after its fetch proves nothing new.
+    /// With both 40 days old, main is too old to count.
+    @Test func aFetchHeadNewerThanItsFetchIsNoRecord() throws {
+        let home = try TempDir("home")
+        let clone = try FetchedClone(home)
+        let worktree = try addWorktree(home, repository: clone.repository, branch: "feature")
+        let old = Date().addingTimeInterval(-40 * 86_400)
+        try clone.moveDev()
+        try clone.git(["fetch", "-q", "origin"], date: old)
+        let touched = try audit(home, worktree)
+        #expect(check(touched, "integrated")?.detail.contains("can't tell when origin/main was last updated") == true,
+                "\(String(describing: check(touched, "integrated")))")
+
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: clone.repository + "/.git/FETCH_HEAD")
+        let stale = try audit(home, worktree)
+        #expect(check(stale, "integrated")?.detail.contains("origin/main was last updated on this Mac 40 days ago") == true,
+                "\(String(describing: check(stale, "integrated")))")
+        #expect(stale.safety == .review)
+    }
+
+    /// Another remote whose URL FETCH_HEAD writes as origin's
+    /// (`bob@fakehost:origin.git` against `git@fakehost:origin.git`) makes
+    /// its lines impossible to tell apart, so none count.
+    @Test func aRemoteWrittenLikeOriginLeavesFetchHeadOut() throws {
+        let home = try TempDir("home")
+        let clone = try FetchedClone(home)
+        try sh(["git", "-C", clone.repository, "remote", "add", "mirror", "bob@fakehost:origin.git"])
+        let worktree = try addWorktree(home, repository: clone.repository, branch: "feature")
+        try clone.moveDev()
+        try clone.git(["fetch", "-q", "origin"])
+        #expect(try audit(home, worktree).safety == .review)
+    }
+
+    /// A fetch run in a linked worktree writes that worktree's FETCH_HEAD.
+    @Test func aFetchInAnotherWorktreeCounts() throws {
+        let home = try TempDir("home")
+        let clone = try FetchedClone(home)
+        let worktree = try addWorktree(home, repository: clone.repository, branch: "feature")
+        let other = try addWorktree(home, repository: clone.repository, branch: "other")
+        try clone.moveDev()
+        try clone.git(["fetch", "-q", "origin"], in: other)
+        #expect(FileManager.default.fileExists(atPath: clone.repository + "/.git/worktrees/other/FETCH_HEAD"))
+        #expect(try audit(home, worktree).safety == .safe)
+    }
+
+    /// origin/main is fetched from the branch origin's refspecs map onto it.
+    @Test func aTrackingRefMapsToTheBranchItIsFetchedFrom() {
+        func source(_ specs: [String]) -> String? {
+            WorktreeGitConfig.parse(specs.map { "remote.origin.fetch\n\($0)\0" }.joined())
+                .sourceBranch(of: "refs/remotes/origin/main")
+        }
+        #expect(source(["+refs/heads/*:refs/remotes/origin/*"]) == "main")
+        #expect(source(["refs/heads/*:refs/remotes/origin/*"]) == "main")
+        #expect(source(["+refs/heads/trunk:refs/remotes/origin/main"]) == "trunk")
+        #expect(source([]) == nil)
+        #expect(source(["+refs/heads/dev:refs/remotes/origin/dev"]) == nil)
+        #expect(source(["+refs/heads/*:refs/remotes/origin/*", "+refs/heads/trunk:refs/remotes/origin/main"]) == nil)
+        #expect(source(["+refs/heads/*:refs/remotes/origin/*", "^refs/heads/main"]) == nil)
+        #expect(source(["+refs/tags/*:refs/remotes/origin/*"]) == nil)
+    }
+
+    /// Remote names keep their case: `ORIGIN` is another remote, whose URL
+    /// FETCH_HEAD would write like origin's.
+    @Test func aRemoteNamedLikeOriginInCapitalsIsAnotherRemote() {
+        let config = WorktreeGitConfig.parse(
+            "remote.ORIGIN.url\nbob@host:repo.git\0remote.origin.url\nalice@host:repo.git\0")
+        #expect(config.originURL == "alice@host:repo.git")
+        #expect(config.otherRemoteURLs == ["bob@host:repo.git"])
+        #expect(config.otherRemoteShares("alice@host:repo.git"))
+    }
+
+    /// FETCH_HEAD names origin without a user name or password, a trailing
+    /// slash or .git, as git 2.54 wrote it for these URLs; a local path is
+    /// copied as it is.
+    @Test func fetchHeadURLsAreWrittenAsGitWritesThem() {
+        let cases = [
+            "https://example.com/repo.git": "https://example.com/repo",
+            "https://user:token@example.com/org/repo.git": "https://example.com/org/repo",
+            "git@github.com:org/repo.git": "github.com:org/repo",
+            "ssh://git@host/org/repo.git/": "ssh://host/org/repo",
+            "ssh://user:pw@host/org/repo": "ssh://host/org/repo",
+            "host:org/repo.git": "host:org/repo",
+            "https://example.com/a@b/repo": "https://example.com/a@b/repo",
+            "/tmp/a@host:repo.git": "/tmp/a@host:repo",
+        ]
+        for (url, written) in cases {
+            #expect(WorktreeAuditor.fetchHeadURL(url) == written, "\(url)")
+        }
+    }
+
     @Test func recognizesURLsOfOtherMachines() {
         for url in ["https://github.com/a/b.git", "git@github.com:a/b.git", "ssh://git@host/x.git", "host:x"] {
             #expect(!WorktreeGitConfig.isLocal(url), "\(url)")
