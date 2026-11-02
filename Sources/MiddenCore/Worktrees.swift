@@ -116,8 +116,12 @@ struct WorktreeAuditor: Sendable {
                 action: .manual("Git can't remove it because its repository is gone. If you don't need its files, delete the folder in Finder."),
                 lastActivity: lastActivity)
         }
+        // The work tree is given, not looked up: a worktree's own
+        // configuration (`git config --worktree core.worktree <folder>`)
+        // could point status at another folder, while `git worktree remove`
+        // deletes this one.
         func run(_ arguments: [String], environment: [String: String] = Command.quietGit) -> CommandResult {
-            Command.run([git, "-C", path] + arguments, environment: environment)
+            Command.run([git, "-C", path, "--work-tree", path] + arguments, environment: environment)
         }
 
         // Where the repository and this worktree's own git folder are,

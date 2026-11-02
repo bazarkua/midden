@@ -156,6 +156,26 @@ private func commit(_ home: TempDir, _ worktree: String, _ name: String) throws 
         #expect(result.safety == .review)
     }
 
+    /// A worktree's own configuration can name another folder as its work
+    /// tree. `git worktree remove` still deletes this folder, so this one is
+    /// what Midden checks.
+    @Test func aWorkTreeNamedInTheWorktreesConfigDoesntMoveTheCheck() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try publish(repository)
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        let decoy = try addWorktree(home, repository: repository, branch: "decoy")
+        try sh(["git", "-C", repository, "config", "extensions.worktreeConfig", "true"])
+        try sh(["git", "-C", worktree, "config", "--worktree", "core.worktree", decoy])
+        try home.write("worktrees/feature/notes.txt", text: "only here\n")
+        // Without the work tree given, git itself looks at the decoy.
+        #expect(try sh(["git", "-C", worktree, "status", "--porcelain"]).isEmpty)
+
+        let result = try audit(home, worktree)
+        #expect(check(result, "uncommitted")?.passed == false, "\(result.checks)")
+        #expect(result.safety == .info)
+    }
+
     @Test func unknownMainBranchIsReview() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)
