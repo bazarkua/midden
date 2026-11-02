@@ -226,11 +226,14 @@ enum Findings {
         Finding(
             id: "sim:\(device.udid)", category: .developerTools,
             title: "\(device.name) simulator (\(device.runtimeName))", path: path,
-            group: "Simulator", bytes: bytes, safety: .safe,
+            group: "Simulator", bytes: bytes, safety: .review,
             explanation: """
-                A simulator that Xcode marks unavailable, usually because its \(device.runtimeName) \
-                runtime is no longer installed, so it can't run. Deleting it removes the apps and \
-                data in it.
+                A simulator that simctl lists as unavailable, usually because its \
+                \(device.runtimeName) runtime is no longer installed, so it can't run. Deleting it \
+                deletes the apps and data in it. simctl also lists a simulator as unavailable when \
+                the selected Xcode doesn't support it, and a runtime can be missing only for a \
+                while, for example after a macOS update until the Mac restarts. Check in Xcode's \
+                settings that you no longer have this runtime before deleting it.
                 """,
             checks: [SafetyCheck(
                 id: "simulatorUnavailable", title: "Unavailable", passed: true,

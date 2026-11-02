@@ -200,6 +200,9 @@ import Testing
         #expect(gone.runtimeName == "iOS 17.2")
         let finding = Findings.simulator(gone, path: "/x/AAA", bytes: 5)
         #expect(finding.id == "sim:AAA")
+        // Its runtime may be gone only for now, and deleting it deletes its
+        // apps and data, so it's never Safe.
+        #expect(finding.safety == .review)
         #expect(finding.action == CleanAction.run(["xcrun", "simctl", "delete", "AAA"]))
     }
 
