@@ -50,7 +50,7 @@ Every finding gets one of three levels:
 A scan can be an hour old when you press Clean. So the cleaner trusts nothing from it and checks every item again from scratch:
 
 1. The path must be inside your home folder, contain no symbolic links, and still match the same rule the scanner used.
-2. Worktrees are audited again. A worktree that got new changes in the meantime is refused, with the reason.
+2. Worktrees are audited again, and every item gets its verdict again. One that is less safe now than when you approved it, such as a worktree approved as Safe that has since got new changes or an ignored file, is refused, with the reason.
 3. If the app that owns a cache is running, Midden asks you to quit it first. Some items also need that no program uses them: a download in progress, a browser started on a profile, a command run from a package cache. If one does, or Midden can't read every program, it refuses.
 4. A folder that holds something Midden keeps is never deleted as a whole. R's cache folder holds renv's package library, which your R projects link to, so Midden lists the parts of that folder separately and keeps the library.
 5. Worktrees are removed with `git worktree remove`, without `--force`, so git itself refuses a worktree with changes.

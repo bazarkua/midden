@@ -68,13 +68,20 @@ struct CleanEngine {
         }
     }
 
-    func clean(_ id: String) -> CleanResult {
+    /// Cleans `id` if it still qualifies. With `verdict`, the one the person
+    /// approved it at, it's refused when it's less safe now: a worktree
+    /// planned as Safe that has since been given an ignored .env isn't
+    /// removed with it.
+    func clean(_ id: String, approvedAt verdict: Safety? = nil) -> CleanResult {
         let approved: Approved
         switch validate(id) {
         case .success(let found): approved = found
         case .failure(let refusal): return CleanResult(id: id, ok: false, message: refusal.message)
         }
         let finding = approved.finding
+        if let verdict, let changed = Self.changedRefusal(finding, approvedAt: verdict) {
+            return CleanResult(id: id, ok: false, message: changed)
+        }
         let (failure, deleted) = perform(approved)
         // A trashed item still takes its space until the Trash is emptied.
         if finding.action == .moveToTrash {
@@ -82,6 +89,21 @@ struct CleanEngine {
         }
         let freed = deleted ?? max(finding.bytes - Self.allocatedSize(finding.path), 0)
         return CleanResult(id: id, ok: failure == nil, message: failure, freedBytes: freed)
+    }
+
+    /// Why an item approved at `verdict` isn't cleaned: checked again now,
+    /// it's less safe than that. Nil when it isn't.
+    static func changedRefusal(_ finding: Finding, approvedAt verdict: Safety) -> String? {
+        guard finding.safety > verdict else { return nil }
+        func name(_ safety: Safety) -> String {
+            switch safety {
+            case .safe: "Safe"
+            case .review: "Review"
+            case .info: "Info"
+            }
+        }
+        let reason = finding.checks.first { !$0.passed }?.detail ?? finding.explanation
+        return "It changed after you approved it: it was \(name(verdict)), and now it's \(name(finding.safety)). \(reason) Scan again to look at it."
     }
 
     /// An item that passed every check, and how its contents are cleaned

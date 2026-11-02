@@ -218,6 +218,31 @@ private func commit(_ home: TempDir, _ worktree: String, _ name: String) throws 
         #expect(index.map(\.tag) == ["H", "S"])
     }
 
+    /// Approved as Safe, then given an ignored folder before the clean: the
+    /// fresh check says Review, and the worktree is refused, not removed
+    /// with it. Approved at Review, the same worktree goes.
+    @Test func aWorktreeLessSafeThanApprovedIsRefused() throws {
+        let home = try TempDir("home")
+        let repository = try makeRepository(home)
+        try publish(repository)
+        let worktree = try addWorktree(home, repository: repository, branch: "feature")
+        var engine = try CleanEngine(home: home.url)
+        engine.makeAuditor = { WorktreeAuditor(processes: ProcessDirectories(processes: []), activeWindow: 0) }
+        engine.runningApp = { _ in nil }
+        #expect(engine.plan(worktree).finding?.safety == .safe)
+
+        try home.write("worktrees/feature/node_modules/kept.js", text: "x\n")
+        let refused = engine.clean(worktree, approvedAt: .safe)
+        #expect(!refused.ok)
+        #expect(refused.message?.contains("it was Safe, and now it's Review") == true, "\(refused)")
+        #expect(refused.message?.contains("node_modules/") == true, "\(refused)")
+        #expect(FileManager.default.fileExists(atPath: worktree + "/node_modules/kept.js"))
+
+        let removed = engine.clean(worktree, approvedAt: .review)
+        #expect(removed.ok, "\(removed)")
+        #expect(!FileManager.default.fileExists(atPath: worktree))
+    }
+
     @Test func unknownMainBranchIsReview() throws {
         let home = try TempDir("home")
         let repository = try makeRepository(home)

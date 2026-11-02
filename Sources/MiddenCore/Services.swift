@@ -147,12 +147,33 @@ public struct Cleaner: Sendable {
         return engine
     }
 
-    /// Cleans the findings with the given ids. Every id is checked again from
-    /// scratch before anything is deleted; ids that no longer qualify are
-    /// refused, not trusted from the earlier scan.
+    /// Cleans the findings with the given ids, as a person approved them:
+    /// `verdicts` holds the verdict each was shown with, and an id without
+    /// one counts as approved at Safe. Every id is checked again from
+    /// scratch before anything is deleted. One that no longer qualifies, or
+    /// is less safe now than it was approved at, is refused.
+    public func clean(
+        _ ids: [String],
+        approvedAt verdicts: [String: Safety],
+        progress: @escaping @Sendable (CleanResult) -> Void = { _ in }
+    ) async -> CleanSummary {
+        await clean(ids, verdicts: verdicts, progress: progress)
+    }
+
+    /// Cleans the findings with the given ids at whatever verdict they have
+    /// now. Every id is checked again from scratch before anything is
+    /// deleted; ids that no longer qualify are refused, not trusted from the
+    /// earlier scan. Where a person approved the items, use
+    /// `clean(_:approvedAt:progress:)`.
     public func clean(
         _ ids: [String],
         progress: @escaping @Sendable (CleanResult) -> Void = { _ in }
+    ) async -> CleanSummary {
+        await clean(ids, verdicts: nil, progress: progress)
+    }
+
+    private func clean(
+        _ ids: [String], verdicts: [String: Safety]?, progress: @escaping @Sendable (CleanResult) -> Void
     ) async -> CleanSummary {
         let home = self.home
         let summary = try? await Background.run { () -> CleanSummary in
@@ -164,7 +185,7 @@ public struct Cleaner: Sendable {
             }
             var results: [CleanResult] = []
             for id in ids {
-                let result = engine.clean(id)
+                let result = engine.clean(id, approvedAt: verdicts.map { $0[id] ?? .safe })
                 progress(result)
                 results.append(result)
             }

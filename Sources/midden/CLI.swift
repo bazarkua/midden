@@ -253,7 +253,10 @@ enum CLI {
             }
         }
 
-        let summary = await cleaner.clean(approved.map(\.id)) { result in
+        // Each at the verdict shown above: one less safe by now is refused.
+        let verdicts = Dictionary(
+            approved.compactMap { plan in plan.finding.map { (plan.id, $0.safety) } }, uniquingKeysWith: { first, _ in first })
+        let summary = await cleaner.clean(approved.map(\.id), approvedAt: verdicts) { result in
             let shown = Format.path(result.id, home: home)
             if result.ok, result.movedToTrash {
                 say("  \(Terminal.paint("✓", .green, enabled: color)) \(shown): moved to the Trash")
